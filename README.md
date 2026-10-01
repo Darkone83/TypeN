@@ -1,5 +1,13 @@
 # TypeN
 
+<div align=center>
+
+<img src="https://github.com/Darkone83/TypeN/blob/main/img/logo.png" width=600>
+
+<img src="https://github.com/Darkone83/TypeN/blob/main/img/Darkone83.png" width=400> <img src="https://github.com/Darkone83/TypeN/blob/main/img/Nacho.png" width=200>
+
+</div>
+
 **TypeN** is an ESP32-P4-powered 800×800 round media display with touch control, SD-backed media playback, local Wi-Fi management, and rollback-safe firmware updates.
 
 The project is designed around a simple goal: load media onto the device, choose what to display, and manage it locally without requiring an external router or Internet connection.
@@ -379,38 +387,6 @@ idf.py monitor
 ```
 
 A full flash is also required whenever the bootloader or partition table changes.
-
----
-
-## Release validation
-
-Before publishing a firmware release, verify at minimum:
-
-- intended project version is embedded
-- display and touch initialize normally
-- SD media scan works
-- selected media restores
-- JPEG / PNG / GIF playback works
-- web media upload/select/delete works
-- repeated web reloads do not exhaust HTTP sockets
-- browser firmware preflight rejects invalid images
-- SD update completes successfully
-- OTA slot rotation is healthy
-- the new image reaches `valid`
-- rollback/recovery remains available
-
-The complete checklist is in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
-
----
-
-## Documentation
-
-| Document | Purpose |
-|---|---|
-| [INSTALL.md](INSTALL.md) | Initial build, flash, and first-boot setup |
-| [C6_Slave_Wiring.md](C6_Slave_Wiring.md) | External C6 UART wiring and bring-up |
-| [UPDATE_RECOVERY.md](UPDATE_RECOVERY.md) | Browser/SD OTA, rollback, and recovery |
-| [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md) | Pre-release validation checklist |
 
 ---
 
