@@ -40,13 +40,36 @@ TypeN targets the ESP32-P4 platform and the 800×800 JD9365 round display used b
 
 Typical TypeN hardware includes:
 
-- ESP32-P4 host
-- JD9365 800×800 MIPI-DSI display
-- GT9xx touch controller
+- Waveshare ESP32-P4 Nano / P4 Nanao WiFi
+- Waveshare 3.4inch DSI Round Capacitive Touch Display, 800 × 800 Resolution
 - microSD storage
-- ESP32-C6 Wi-Fi coprocessor
+- Waveshare ESP32-C6 Zero Wi-Fi coprocessor (only if using the P4 Nano)
 - 32 MB application flash layout
 - PSRAM-backed media and framebuffer workloads
+
+### Parts and purchase links
+
+The display is common to both TypeN hardware configurations. Choose either the **P4 Pico + external C6 Zero** combination or the **P4 Pico WiFi** with its onboard C6.
+
+| Part | Used for | Purchase |
+|---|---|---|
+| 800×800 round display | All TypeN builds | [Amazon](https://www.amazon.com/dp/B0GDF8NL4M?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| P4 Pico | External-C6 / UART build | [Amazon](https://www.amazon.com/dp/B0FM3VBHBJ?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| P4 Pico WiFi | Onboard-C6 / SDIO build | [Amazon](https://www.amazon.com/dp/B0FKTK8LC2?ref=ppx_yo2ov_dt_b_fed_asin_title) |
+| Waveshare ESP32-C6 Zero | External-C6 / UART build | [Amazon](https://www.amazon.com/waveshare-Development-ESP32-C6FH4-Processors-Integrates/dp/B0CZQPFC48/ref=sr_1_2_pp?crid=2GG41RYMM3YL9&dib=eyJ2IjoiMSJ9.BY6UWLD6RX8rKEuX1O2E1KOPcGAfFFQH6PuIZKAr2WlA2Ti6otPcUr21HXe1WzeqKeQ9wuxNtSN4A5RLIKpsdZ5UWHEly9llfo9ROR_qLDcSJNiqU5qOMRE5g9efR5vvuOGJpp_4uUqEGzpMQSG3a5Tz07pqPBgwhyHwIPxUAld0kru6rsI0sj6hy3_f8OIBDtE-oyS_FG9nD0WoMp6T1O0vXGr6Z5c81WH-5PwSdVcP_yVr_pqlfLbIxNotwO_opobJ8QvfWWH_VA288suIZz-L_AWa1F8E9coT9wBJsAM.5HHJ1Zlvh17O2NM9xbwc6evtwPM_i9JcYhKWOMsv360&dib_tag=se&keywords=esp32+c6+zero&qid=1790887205&s=electronics&sprefix=esp32+c6+zero%2Celectronics%2C602&sr=1-2) |
+
+Amazon listings, pricing, and availability can change over time.
+
+For the two supported configurations:
+
+```text
+P4 Pico build
+    Display + P4 Pico + ESP32-C6 Zero
+
+P4 Pico WiFi build
+    Display + P4 Pico WiFi
+    (C6 is onboard; no external C6 Zero required)
+```
 
 ---
 
