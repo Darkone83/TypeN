@@ -41,6 +41,12 @@ esp_err_t typen_media_get(size_t index, typen_media_item_t *out);
  */
 esp_err_t typen_media_find(const char *name_or_path, typen_media_item_t *out);
 
+/*
+ * Deletes a catalogued media file by full path, then rebuilds the catalog.
+ * The caller should refresh any UI/thumbnail state after success.
+ */
+esp_err_t typen_media_delete(const char *path);
+
 const char *typen_media_type_name(typen_media_type_t type);
 
 #ifdef __cplusplus

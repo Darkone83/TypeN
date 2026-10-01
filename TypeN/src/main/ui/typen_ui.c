@@ -51,6 +51,10 @@
 #define MEDIA_THUMB_W           196
 #define MEDIA_THUMB_H            88
 
+#define MEDIA_DELETE_W            42
+#define MEDIA_DELETE_H            42
+#define MEDIA_DELETE_MARGIN        4
+
 typedef enum {
     PAGE_HOME = 0,
     PAGE_DISPLAY,
@@ -58,6 +62,11 @@ typedef enum {
     PAGE_SYSTEM,
     PAGE_ABOUT,
 } typen_page_t;
+
+typedef enum {
+    MEDIA_CONFIRM_SET = 0,
+    MEDIA_CONFIRM_DELETE,
+} media_confirm_mode_t;
 
 static const char *TAG = "typen_ui";
 
@@ -72,6 +81,8 @@ static size_t s_media_count = 0;
 static size_t s_media_page_index = 0;
 static bool s_media_confirm_visible = false;
 static size_t s_media_confirm_index = 0;
+static media_confirm_mode_t s_media_confirm_mode =
+    MEDIA_CONFIRM_SET;
 
 static char s_status[48] = "STARTING";
 static char s_wifi[48] = "GATED";
@@ -603,6 +614,37 @@ static void draw_media_card(
         MEDIA_THUMB_H
     );
 
+    /*
+     * Small destructive-action target in the thumbnail's upper-right corner.
+     * Touch hit-testing uses these same dimensions before the card itself.
+     */
+    const int delete_x =
+        x + 11 + MEDIA_THUMB_W -
+        MEDIA_DELETE_W -
+        MEDIA_DELETE_MARGIN;
+
+    const int delete_y =
+        y + 9 + MEDIA_DELETE_MARGIN;
+
+    stroke_round_rect(
+        delete_x,
+        delete_y,
+        MEDIA_DELETE_W,
+        MEDIA_DELETE_H,
+        9,
+        1,
+        C_WARN,
+        C_PANEL_PRESSED
+    );
+
+    draw_text_center(
+        delete_x + MEDIA_DELETE_W / 2,
+        delete_y + 14,
+        "X",
+        2,
+        C_WARN
+    );
+
     draw_text_ellipsis(
         x + 12,
         y + 106,
@@ -624,7 +666,14 @@ static void draw_media_confirmation(void)
         return;
     }
 
-    draw_shell("SET MEDIA?", typen_media_type_name(item.type));
+    const bool deleting =
+        s_media_confirm_mode ==
+        MEDIA_CONFIRM_DELETE;
+
+    draw_shell(
+        deleting ? "DELETE MEDIA?" : "SET MEDIA?",
+        typen_media_type_name(item.type)
+    );
 
     draw_media_thumbnail(
         s_media_confirm_index,
@@ -663,6 +712,16 @@ static void draw_media_confirmation(void)
         C_TEXT_DIM
     );
 
+    if (deleting) {
+        draw_text_center(
+            400,
+            SAFE_Y + 402,
+            "THIS CANNOT BE UNDONE",
+            1,
+            C_WARN
+        );
+    }
+
     stroke_round_rect(
         SAFE_X + 314,
         SAFE_Y + 430,
@@ -670,16 +729,16 @@ static void draw_media_confirmation(void)
         50,
         14,
         1,
-        C_ACCENT_DIM,
+        deleting ? C_WARN : C_ACCENT_DIM,
         C_PANEL_PRESSED
     );
 
     draw_text_center(
         SAFE_X + 389,
         SAFE_Y + 447,
-        "SET",
+        deleting ? "DELETE" : "SET",
         2,
-        C_ACCENT
+        deleting ? C_WARN : C_ACCENT
     );
 
     present();
@@ -1008,6 +1067,7 @@ static void draw_media_page(void)
 {
     s_page = PAGE_MEDIA;
     s_media_confirm_visible = false;
+    s_media_confirm_mode = MEDIA_CONFIRM_SET;
 
     const size_t pages = media_page_count();
 
@@ -1450,6 +1510,7 @@ static void close_menu(void)
     s_menu_visible = false;
     s_page = PAGE_HOME;
     s_media_confirm_visible = false;
+    s_media_confirm_mode = MEDIA_CONFIRM_SET;
 
     typen_thumb_cache_set_paused(true);
 
@@ -1492,6 +1553,7 @@ static void handle_home_tap(int x, int y)
             row_w, row_h)) {
         s_media_page_index = 0;
         s_media_confirm_visible = false;
+        s_media_confirm_mode = MEDIA_CONFIRM_SET;
         draw_media_page();
         return;
     }
@@ -1552,6 +1614,44 @@ static void handle_subpage_tap(int x, int y)
                     &item
                 );
 
+            if (s_media_confirm_mode ==
+                MEDIA_CONFIRM_DELETE) {
+                if (err == ESP_OK) {
+                    err =
+                        typen_media_delete(
+                            item.path
+                        );
+                }
+
+                if (err == ESP_OK) {
+                    ESP_LOGI(
+                        TAG,
+                        "Deleted from local media browser: %s",
+                        item.path
+                    );
+
+                    typen_thumb_cache_reset();
+
+                    s_media_count =
+                        typen_media_count();
+
+                    s_media_confirm_visible = false;
+                    s_media_confirm_mode = MEDIA_CONFIRM_SET;
+
+                    draw_media_page();
+                } else {
+                    ESP_LOGE(
+                        TAG,
+                        "Unable to delete media: %s",
+                        esp_err_to_name(err)
+                    );
+
+                    draw_media_confirmation();
+                }
+
+                return;
+            }
+
             if (err == ESP_OK) {
                 err =
                     typen_settings_set_selected_media(
@@ -1582,6 +1682,7 @@ static void handle_subpage_tap(int x, int y)
                 );
 
                 s_media_confirm_visible = false;
+                s_media_confirm_mode = MEDIA_CONFIRM_SET;
                 draw_media_page();
             }
 
@@ -1662,6 +1763,33 @@ static void handle_subpage_tap(int x, int y)
                 break;
             }
 
+            const int delete_x =
+                card_x[slot] + 11 +
+                MEDIA_THUMB_W -
+                MEDIA_DELETE_W -
+                MEDIA_DELETE_MARGIN;
+
+            const int delete_y =
+                card_y[slot] + 9 +
+                MEDIA_DELETE_MARGIN;
+
+            /*
+             * Destructive target must be tested before the whole media card,
+             * otherwise tapping X would fall through to SET MEDIA.
+             */
+            if (point_in(
+                    x, y,
+                    delete_x,
+                    delete_y,
+                    MEDIA_DELETE_W,
+                    MEDIA_DELETE_H)) {
+                s_media_confirm_index = index;
+                s_media_confirm_mode = MEDIA_CONFIRM_DELETE;
+                s_media_confirm_visible = true;
+                draw_media_confirmation();
+                return;
+            }
+
             if (point_in(
                     x, y,
                     card_x[slot],
@@ -1669,6 +1797,7 @@ static void handle_subpage_tap(int x, int y)
                     MEDIA_CARD_W,
                     MEDIA_CARD_H)) {
                 s_media_confirm_index = index;
+                s_media_confirm_mode = MEDIA_CONFIRM_SET;
                 s_media_confirm_visible = true;
                 draw_media_confirmation();
                 return;

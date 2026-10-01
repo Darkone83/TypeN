@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -476,6 +477,62 @@ esp_err_t typen_media_find(
 
     xSemaphoreGive(s_lock);
     return ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t typen_media_delete(
+    const char *path)
+{
+    if (path == NULL ||
+        path[0] == '\0' ||
+        s_lock == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    typen_media_item_t item;
+
+    esp_err_t err =
+        typen_media_find(
+            path,
+            &item
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    /*
+     * This API is intentionally path-based. Do not let a basename-only match
+     * delete a different file when duplicate names exist in separate folders.
+     */
+    if (strcmp(item.path, path) != 0) {
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    errno = 0;
+
+    if (remove(item.path) != 0) {
+        const int delete_errno = errno;
+
+        ESP_LOGE(
+            TAG,
+            "Delete failed: %s errno=%d",
+            item.path,
+            delete_errno
+        );
+
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(
+        TAG,
+        "Deleted media: %s",
+        item.path
+    );
+
+    /*
+     * Keep all catalog users coherent immediately after a local delete.
+     */
+    return typen_media_scan();
 }
 
 const char *typen_media_type_name(
