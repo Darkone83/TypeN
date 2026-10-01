@@ -134,24 +134,6 @@ For an already-configured source tree, avoid replacing `sdkconfig` unless you ar
 
 The P4 Pico and P4 Pico WiFi builds should use separate configuration/source trees so their ESP-Hosted transport settings remain unambiguous.
 
-### Firmware version
-
-Set an explicit release version before producing public firmware.
-
-Preferred approaches:
-
-```text
-version.txt
-```
-
-or:
-
-```cmake
-set(PROJECT_VER "x.y.z")
-```
-
-The embedded version is shown in the TypeN web interface and startup log.
-
 ---
 
 ## First installation
