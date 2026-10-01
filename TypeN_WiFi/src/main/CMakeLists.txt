@@ -1,0 +1,34 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "board/typen_board.c"
+        "storage/typen_storage.c"
+        "media/typen_media.c"
+        "media/typen_thumb_cache.c"
+        "settings/typen_settings.c"
+        "playback/typen_playback.c"
+        "jpeg/typen_jpeg.c"
+        "png/typen_png.c"
+        "gif/typen_gif.c"
+        "gif/gifdec.c"
+        "ui/typen_ui.c"
+        "updater/typen_update.c"
+        "wifi/typen_wifi.c"
+        "web/typen_web.c"
+
+    INCLUDE_DIRS
+        "."
+        "board"
+        "storage"
+        "media"
+        "settings"
+        "playback"
+        "jpeg"
+        "png"
+        "gif"
+        "ui"
+        "updater"
+        "wifi"
+        "web"
+
+)

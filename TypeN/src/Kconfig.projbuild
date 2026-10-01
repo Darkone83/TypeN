@@ -1,0 +1,23 @@
+menu "TypeN Wi-Fi"
+
+    config TYPEN_WIFI_SSID
+        string "Management AP SSID"
+        default "TypeN-Setup"
+
+    config TYPEN_WIFI_PASSWORD
+        string "Management AP password"
+        default "typen1234"
+        help
+            WPA2 passphrase. Leave empty only for development.
+
+    config TYPEN_WIFI_CHANNEL
+        int "Management AP channel"
+        range 1 13
+        default 1
+
+    config TYPEN_WIFI_MAX_CLIENTS
+        int "Maximum management clients"
+        range 1 4
+        default 2
+
+endmenu

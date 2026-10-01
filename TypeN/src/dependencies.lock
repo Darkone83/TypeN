@@ -1,0 +1,355 @@
+dependencies:
+  espressif/button:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__button
+      type: local
+    version: 4.2.1
+  espressif/cmake_utilities:
+    component_hash: 05165f30922b422b4b90c08845e6d449329b97370fbd06309803d8cb539d79e3
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.1
+  espressif/eppp_link:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__eppp_link
+      type: local
+    version: 1.1.6
+  espressif/esp_codec_dev:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_codec_dev
+      type: local
+    version: 1.5.11
+  espressif/esp_hosted:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_hosted
+      type: local
+    version: 1.4.7
+  espressif/esp_lcd_ek79007:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lcd_ek79007
+      type: local
+    version: 2.0.2~1
+  espressif/esp_lcd_st7701:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lcd_st7701
+      type: local
+    version: 2.0.2~2
+  espressif/esp_lcd_touch:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lcd_touch
+      type: local
+    version: 1.2.1
+  espressif/esp_lcd_touch_gt911:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lcd_touch_gt911
+      type: local
+    version: 1.2.1
+  espressif/esp_lv_decoder:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lv_decoder
+      type: local
+    version: 0.4.3
+  espressif/esp_lv_fs:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lv_fs
+      type: local
+    version: 1.0.1
+  espressif/esp_lvgl_adapter:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_lvgl_adapter
+      type: local
+    version: 0.6.4
+  espressif/esp_mmap_assets:
+    component_hash: 42310c362596de2a37248c2937b1754bc29cd0356b9839e2a77cf791e6bcdde1
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.0.1
+  espressif/esp_new_jpeg:
+    component_hash: e1e7e6991193c41ed6c9fc386702aa7821433319e7aa9c3147cd3236310cd69c
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    - esp32c2
+    - esp32c3
+    - esp32c5
+    - esp32c6
+    - esp32c61
+    - esp32h4
+    version: 1.0.2
+  espressif/esp_serial_slave_link:
+    component_hash: ac1776806de0a6e371c84e87898bb983e19ce62aa7f1e2e5c4a3b0234a575d2c
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.2
+  espressif/esp_wifi_remote:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__esp_wifi_remote
+      type: local
+    version: 0.14.5
+  espressif/freetype:
+    component_hash: aa9f7657a69b2b1c1f49044017fc424081d4e0fe6e97834cb43883548d44e3ca
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.14.3~1
+  espressif/i2c_bus:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\espressif__i2c_bus
+      type: local
+    version: 1.5.2
+  espressif/knob:
+    component_hash: b56694054cd34a683ac2a6f3661963ba00b1dab741a4f3bb59ed6666cbc9f3fb
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=4.4.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0
+  espressif/libpng:
+    component_hash: d094357a329f78668629d7c9656064b2b0123196eb6d25ca77db3782e0752480
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.1'
+    - name: espressif/zlib
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.2.13
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.6.58~2
+  espressif/zlib:
+    component_hash: 9083cada65f1c9d298ef92266232d071c6f2f335164e2799554b3eae73aedc55
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.3.2~1
+  idf:
+    source:
+      type: idf
+    version: 5.5.1
+  lvgl/lvgl:
+    component_hash: 7d82410747bbfb319531449749e940f440f8414f041f9eaba13f0d1dd7f58cdd
+    dependencies:
+    - name: espressif/freetype
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: idf_version >=5.5 && $CONFIG{LV_USE_FREETYPE} == True
+      version: ^2.14.3
+    - name: espressif/libjpeg-turbo
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: idf_version >=5.5 && $CONFIG{LV_USE_LIBJPEG_TURBO} == True
+      version: ^3.1.1
+    - name: espressif/libpng
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: idf_version >=5.5 && $CONFIG{LV_USE_LIBPNG} == True
+      version: ^1.6.58
+    - name: espressif/lz4
+      registry_url: https://components.espressif.com
+      require: private
+      rules:
+      - if: idf_version >=5.5 && $CONFIG{LV_USE_LZ4} == True && $CONFIG{LV_USE_LZ4_INTERNAL}
+          == False
+      version: ^1.10.0
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 9.6.0~1
+  waveshare/esp32_p4_platform:
+    dependencies: []
+    source:
+      path: C:\Users\pfoley\Desktop\TypeN Project\TypeN\managed_components\waveshare__esp32_p4_platform
+      type: local
+    version: 2.0.1
+  waveshare/esp_lcd_dsi:
+    component_hash: 004e3455a2e331eadef75da0df28eb090d03681e0300d75abccb1722fbca66c4
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/i2c_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.3.0
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 2.0.0
+  waveshare/esp_lcd_hx8394:
+    component_hash: 4d450c1ba5265c1daf3ecdf0ce56839c7247771bfcf8cf5436f1481de6757319
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/i2c_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.3.0
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 2.1.0
+  waveshare/esp_lcd_ili9881c:
+    component_hash: 3150ce0151872e7d2b2ad03a3ce4f3a95b3598d7786d13c6a478c6835a9b423d
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/i2c_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.3.0
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 2.0.0
+  waveshare/esp_lcd_jd9365:
+    component_hash: cb97511cfb9d3f59d652bb843b0b2571eeac6516d98db448fce8ff580e8ced41
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/i2c_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.3.0
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 2.0.0
+  waveshare/esp_lcd_ota7290b:
+    component_hash: 596186f8d08db84dc5fd9e133d137c09f074d2239d4b245a35bcdfe978a3b165
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/i2c_bus
+      registry_url: https://components.espressif.com
+      require: private
+      version: ^1.3.0
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 2.0.0
+direct_dependencies:
+- espressif/button
+- espressif/cmake_utilities
+- espressif/eppp_link
+- espressif/esp_codec_dev
+- espressif/esp_hosted
+- espressif/esp_lcd_ek79007
+- espressif/esp_lcd_st7701
+- espressif/esp_lcd_touch
+- espressif/esp_lcd_touch_gt911
+- espressif/esp_lv_decoder
+- espressif/esp_lv_fs
+- espressif/esp_lvgl_adapter
+- espressif/esp_mmap_assets
+- espressif/esp_new_jpeg
+- espressif/esp_serial_slave_link
+- espressif/esp_wifi_remote
+- espressif/freetype
+- espressif/i2c_bus
+- espressif/knob
+- espressif/libpng
+- espressif/zlib
+- idf
+- lvgl/lvgl
+- waveshare/esp32_p4_platform
+- waveshare/esp_lcd_dsi
+- waveshare/esp_lcd_hx8394
+- waveshare/esp_lcd_ili9881c
+- waveshare/esp_lcd_jd9365
+- waveshare/esp_lcd_ota7290b
+manifest_hash: deb854a07ac6485ae7e209d4dc365108431f1bc728dae24bc808edc0876fbc59
+target: esp32p4
+version: 2.0.0
