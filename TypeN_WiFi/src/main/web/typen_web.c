@@ -405,8 +405,8 @@ static const char INDEX_HTML[] =
 "              <div class=\"card-title\"><div><div class=\"eyebrow\">Add media</div><h2>Upload to SD</h2></div></div>\n"
 "              <div class=\"upload-zone\">\n"
 "                <label class=\"filepick\">\n"
-"                  <input id=\"file\" type=\"file\" accept=\".jpg,.jpeg,.png,.gif,image/jpeg,image/png,image/gif\">\n"
-"                  <div><strong id=\"fileLabel\">Choose JPEG, PNG, or GIF</strong><span>Tap to browse this device</span></div>\n"
+"                  <input id=\"file\" type=\"file\" accept=\".jpg,.jpeg,.png,.gif,.bmp,.webp,image/jpeg,image/png,image/gif,image/bmp,image/webp\">\n"
+"                  <div><strong id=\"fileLabel\">Choose JPEG, PNG, GIF, BMP, or WebP</strong><span>Tap to browse this device</span></div>\n"
 "                </label>\n"
 "                <div><div class=\"muted\" style=\"font-size:11px;margin-bottom:4px\">Destination</div><div class=\"pathline\" id=\"uploadPath\">…</div></div>\n"
 "                <div class=\"progress\"><i id=\"uploadProgress\"></i></div>\n"
@@ -607,7 +607,7 @@ static const char INDEX_HTML[] =
 "            <div class=\"card-title\"><div><div class=\"eyebrow\">Project</div><h2>TypeN</h2></div></div>\n"
 "            <div class=\"setting-row\"><b>Platform</b><span>ESP32-P4 + ESP32-C6</span></div>\n"
 "            <div class=\"setting-row\"><b>Display</b><span>800 × 800 JD9365 MIPI-DSI</span></div>\n"
-"            <div class=\"setting-row\"><b>Media</b><span>JPEG · PNG · GIF</span></div>\n"
+"            <div class=\"setting-row\"><b>Media</b><span>JPEG · PNG · GIF · BMP · WebP</span></div>\n"
 "            <div class=\"setting-row\"><b>Control</b><span>Local touch + local WebUI</span></div>\n"
 "          </article>\n"
 "          <article class=\"card\">\n"
@@ -1005,7 +1005,7 @@ static const char INDEX_HTML[] =
 "}\n"
 "\n"
 "$('#file').addEventListener('change',e=>{\n"
-"  const f=e.target.files[0]; $('#fileLabel').textContent=f?`${f.name} · ${size(f.size)}`:'Choose JPEG, PNG, or GIF';\n"
+"  const f=e.target.files[0]; $('#fileLabel').textContent=f?`${f.name} · ${size(f.size)}`:'Choose JPEG, PNG, GIF, BMP, or WebP';\n"
 "});\n"
 "\n"
 "const TYPEN_IMAGE_MAX_EDGE=1024;\n"
@@ -1018,6 +1018,27 @@ static const char INDEX_HTML[] =
 "function isPngFile(f){\n"
 "  const n=String(f.name||'').toLowerCase();\n"
 "  return f.type==='image/png'||n.endsWith('.png');\n"
+"}\n"
+"\n"
+"function isWebpFile(f){\n"
+"  const n=String(f.name||'').toLowerCase();\n"
+"  return f.type==='image/webp'||n.endsWith('.webp');\n"
+"}\n"
+"\n"
+"async function webpIsAnimated(file){\n"
+"  const bytes=new Uint8Array(await file.slice(0,256).arrayBuffer());\n"
+"  if(bytes.length<12)return false;\n"
+"  const tag=(o,n)=>String.fromCharCode(...bytes.slice(o,o+n));\n"
+"  const u32=o=>bytes[o]|(bytes[o+1]<<8)|(bytes[o+2]<<16)|(bytes[o+3]<<24);\n"
+"  if(tag(0,4)!=='RIFF'||tag(8,4)!=='WEBP')return false;\n"
+"  let p=12;\n"
+"  while(p+8<=bytes.length){\n"
+"    const fourcc=tag(p,4),len=u32(p+4)>>>0,data=p+8;\n"
+"    if(fourcc==='ANIM'||fourcc==='ANMF')return true;\n"
+"    if(fourcc==='VP8X'&&len>=1&&data<bytes.length)return (bytes[data]&2)!==0;\n"
+"    const next=data+len+(len&1);if(next<=p||next>bytes.length)break;p=next;\n"
+"  }\n"
+"  return false;\n"
 "}\n"
 "\n"
 "async function loadUploadImage(file){\n"
@@ -1039,6 +1060,10 @@ static const char INDEX_HTML[] =
 "\n"
 "function canvasPngBlob(canvas){\n"
 "  return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('PNG conversion failed')),'image/png'));\n"
+"}\n"
+"\n"
+"function canvasWebpBlob(canvas){\n"
+"  return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('WebP conversion failed')),'image/webp',.90));\n"
 "}\n"
 "\n"
 "async function prepareJpegUpload(file){\n"
@@ -1079,14 +1104,37 @@ static const char INDEX_HTML[] =
 "  return {blob:blob,name:file.name,detail:`PNG resized ${sw}×${sh} → ${dw}×${dh} · transparency preserved · ${size(file.size)} → ${size(blob.size)}`};\n"
 "}\n"
 "\n"
+"async function prepareWebpUpload(file){\n"
+"  $('#uploadDetail').textContent='Checking WebP…';\n"
+"  if(await webpIsAnimated(file))throw new Error('Animated WebP is not supported; use GIF for animation.');\n"
+"  $('#uploadDetail').textContent='Checking WebP dimensions…';\n"
+"  const image=await loadUploadImage(file);\n"
+"  const sw=Number(image.width||image.naturalWidth)||0,sh=Number(image.height||image.naturalHeight)||0;\n"
+"  if(!sw||!sh){if(image.close)try{image.close()}catch(e){};throw new Error('Unable to determine WebP dimensions')}\n"
+"  if(Math.max(sw,sh)<=TYPEN_IMAGE_MAX_EDGE){\n"
+"    if(image.close)try{image.close()}catch(e){}\n"
+"    return {blob:file,name:file.name,detail:`WebP ${sw}×${sh} already within TypeN ${TYPEN_IMAGE_MAX_EDGE}px limit · ${size(file.size)}`};\n"
+"  }\n"
+"  let dw,dh;\n"
+"  if(sw>=sh){dw=TYPEN_IMAGE_MAX_EDGE;dh=Math.max(1,Math.round(sh*TYPEN_IMAGE_MAX_EDGE/sw))}\n"
+"  else{dh=TYPEN_IMAGE_MAX_EDGE;dw=Math.max(1,Math.round(sw*TYPEN_IMAGE_MAX_EDGE/sh))}\n"
+"  const canvas=document.createElement('canvas');canvas.width=dw;canvas.height=dh;\n"
+"  const ctx=canvas.getContext('2d',{alpha:true});if(!ctx)throw new Error('Canvas unavailable');\n"
+"  ctx.clearRect(0,0,dw,dh);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(image,0,0,dw,dh);\n"
+"  if(image.close)try{image.close()}catch(e){}\n"
+"  const blob=await canvasWebpBlob(canvas);\n"
+"  return {blob:blob,name:file.name,detail:`WebP resized ${sw}×${sh} → ${dw}×${dh} · alpha preserved · ${size(file.size)} → ${size(blob.size)}`};\n"
+"}\n"
+"\n"
 "async function prepareUpload(file){\n"
 "  if(isJpegFile(file))return await prepareJpegUpload(file);\n"
 "  if(isPngFile(file))return await preparePngUpload(file);\n"
+"  if(isWebpFile(file))return await prepareWebpUpload(file);\n"
 "  return {blob:file,name:file.name,detail:''};\n"
 "}\n"
 "\n"
 "async function upload(){\n"
-"  const f=$('#file').files[0];if(!f){toast('Choose a JPEG, PNG, or GIF first.');return}\n"
+"  const f=$('#file').files[0];if(!f){toast('Choose a JPEG, PNG, GIF, BMP, or WebP first.');return}\n"
 "  const btn=$('#uploadBtn'),bar=$('#uploadProgress');btn.disabled=true;bar.style.width='0%';\n"
 "  try{\n"
 "    const prepared=await prepareUpload(f);\n"
@@ -1094,7 +1142,7 @@ static const char INDEX_HTML[] =
 "    const x=new XMLHttpRequest();\n"
 "    x.open('POST','/api/upload?name='+encodeURIComponent(prepared.name));\n"
 "    x.upload.onprogress=e=>{if(e.lengthComputable)bar.style.width=((e.loaded/e.total)*100).toFixed(1)+'%'};\n"
-"    x.onload=async()=>{btn.disabled=false;if(x.status>=200&&x.status<300){bar.style.width='100%';toast('Upload complete');$('#file').value='';$('#fileLabel').textContent='Choose JPEG, PNG, or GIF';await refreshMedia()}else toast(x.responseText||'Upload failed')};\n"
+"    x.onload=async()=>{btn.disabled=false;if(x.status>=200&&x.status<300){bar.style.width='100%';toast('Upload complete');$('#file').value='';$('#fileLabel').textContent='Choose JPEG, PNG, GIF, BMP, or WebP';await refreshMedia()}else toast(x.responseText||'Upload failed')};\n"
 "    x.onerror=()=>{btn.disabled=false;toast('Upload failed')};\n"
 "    x.send(prepared.blob);\n"
 "  }catch(e){btn.disabled=false;$('#uploadDetail').textContent='';toast(e.message||'Unable to prepare upload')}\n"
@@ -1456,7 +1504,9 @@ static bool safe_filename(const char *name)
     return !strcasecmp(ext, ".jpg") ||
            !strcasecmp(ext, ".jpeg") ||
            !strcasecmp(ext, ".png") ||
-           !strcasecmp(ext, ".gif");
+           !strcasecmp(ext, ".gif") ||
+           !strcasecmp(ext, ".bmp") ||
+           !strcasecmp(ext, ".webp");
 }
 
 static bool safe_sd_path(const char *path)
@@ -2242,6 +2292,10 @@ static const char *media_content_type(
             return "image/png";
         case TYPEN_MEDIA_GIF:
             return "image/gif";
+        case TYPEN_MEDIA_BMP:
+            return "image/bmp";
+        case TYPEN_MEDIA_WEBP:
+            return "image/webp";
         default:
             return "application/octet-stream";
     }

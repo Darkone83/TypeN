@@ -12,11 +12,13 @@
 #include "esp_timer.h"
 
 #include "typen_board.h"
+#include "typen_bmp.h"
 #include "typen_gif.h"
 #include "typen_jpeg.h"
 #include "typen_media.h"
 #include "typen_playback.h"
 #include "typen_png.h"
+#include "typen_webp.h"
 
 #define PLAYBACK_W               TYPEN_LCD_W
 #define PLAYBACK_H               TYPEN_LCD_H
@@ -427,6 +429,48 @@ static esp_err_t render_png(
     );
 }
 
+static esp_err_t render_bmp(
+    const typen_media_item_t *item,
+    uint16_t *target)
+{
+    clear_frame(
+        target
+    );
+
+    return typen_bmp_draw_preview(
+        item->path,
+        target,
+        PLAYBACK_W,
+        PLAYBACK_H,
+        0,
+        0,
+        PLAYBACK_W,
+        PLAYBACK_H,
+        PLAYBACK_BG
+    );
+}
+
+static esp_err_t render_webp(
+    const typen_media_item_t *item,
+    uint16_t *target)
+{
+    clear_frame(
+        target
+    );
+
+    return typen_webp_draw_preview(
+        item->path,
+        target,
+        PLAYBACK_W,
+        PLAYBACK_H,
+        0,
+        0,
+        PLAYBACK_W,
+        PLAYBACK_H,
+        PLAYBACK_BG
+    );
+}
+
 static bool receive_replacement(
     typen_media_item_t *replacement,
     TickType_t wait_ticks)
@@ -535,6 +579,22 @@ static esp_err_t run_static_item(
         case TYPEN_MEDIA_PNG:
             err =
                 render_png(
+                    item,
+                    target
+                );
+            break;
+
+        case TYPEN_MEDIA_BMP:
+            err =
+                render_bmp(
+                    item,
+                    target
+                );
+            break;
+
+        case TYPEN_MEDIA_WEBP:
+            err =
+                render_webp(
                     item,
                     target
                 );

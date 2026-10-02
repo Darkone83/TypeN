@@ -11,10 +11,12 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 
+#include "typen_bmp.h"
 #include "typen_gif.h"
 #include "typen_jpeg.h"
 #include "typen_media.h"
 #include "typen_png.h"
+#include "typen_webp.h"
 #include "typen_thumb_cache.h"
 
 #define THUMB_CACHE_SLOTS       12
@@ -317,6 +319,32 @@ esp_err_t typen_thumb_render_item(
 
         case TYPEN_MEDIA_GIF:
             return typen_gif_draw_preview(
+                item->path,
+                dst,
+                TYPEN_THUMB_W,
+                TYPEN_THUMB_H,
+                0,
+                0,
+                TYPEN_THUMB_W,
+                TYPEN_THUMB_H,
+                THUMB_BG
+            );
+
+        case TYPEN_MEDIA_BMP:
+            return typen_bmp_draw_preview(
+                item->path,
+                dst,
+                TYPEN_THUMB_W,
+                TYPEN_THUMB_H,
+                0,
+                0,
+                TYPEN_THUMB_W,
+                TYPEN_THUMB_H,
+                THUMB_BG
+            );
+
+        case TYPEN_MEDIA_WEBP:
+            return typen_webp_draw_preview(
                 item->path,
                 dst,
                 TYPEN_THUMB_W,

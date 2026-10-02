@@ -140,6 +140,14 @@ static typen_media_type_t detect_type(const char *name)
         return TYPEN_MEDIA_PNG;
     }
 
+    if (!strcasecmp(ext, ".bmp")) {
+        return TYPEN_MEDIA_BMP;
+    }
+
+    if (!strcasecmp(ext, ".webp")) {
+        return TYPEN_MEDIA_WEBP;
+    }
+
     return TYPEN_MEDIA_UNKNOWN;
 }
 
@@ -580,6 +588,12 @@ const char *typen_media_type_name(
 
         case TYPEN_MEDIA_PNG:
             return "PNG";
+
+        case TYPEN_MEDIA_BMP:
+            return "BMP";
+
+        case TYPEN_MEDIA_WEBP:
+            return "WEBP";
 
         default:
             return "UNKNOWN";

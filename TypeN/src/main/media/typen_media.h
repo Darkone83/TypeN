@@ -13,6 +13,8 @@ typedef enum {
     TYPEN_MEDIA_JPEG,
     TYPEN_MEDIA_GIF,
     TYPEN_MEDIA_PNG,
+    TYPEN_MEDIA_BMP,
+    TYPEN_MEDIA_WEBP,
 } typen_media_type_t;
 
 typedef struct {
@@ -35,15 +37,17 @@ size_t typen_media_count(void);
 esp_err_t typen_media_get(size_t index, typen_media_item_t *out);
 
 /*
- * Matches full path first, then basename for compatibility with the future web
- * selector. Full paths are the preferred stable identifier because duplicate
- * filenames can exist in different folders.
+ * Matches full path first, then basename for compatibility with web callers.
+ * Full paths are the preferred stable identifier because duplicate filenames
+ * can exist in different folders.
  */
 esp_err_t typen_media_find(const char *name_or_path, typen_media_item_t *out);
 
 /*
- * Deletes a catalogued media file by full path, then rebuilds the catalog.
- * The caller should refresh any UI/thumbnail state after success.
+ * Deletes a catalogued media file by full path and removes that item from the
+ * live in-memory catalog. It deliberately does not perform a recursive rescan
+ * from the caller's task. The caller should refresh UI/thumbnail state after
+ * success.
  */
 esp_err_t typen_media_delete(const char *path);
 

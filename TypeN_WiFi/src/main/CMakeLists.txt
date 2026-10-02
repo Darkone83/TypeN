@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "main.c"
         "board/typen_board.c"
+        "bmp/typen_bmp.c"
         "storage/typen_storage.c"
         "media/typen_media.c"
         "media/typen_thumb_cache.c"
@@ -16,10 +17,12 @@ idf_component_register(
         "updater/typen_update.c"
         "wifi/typen_wifi.c"
         "web/typen_web.c"
+        "webp/typen_webp.c"
 
     INCLUDE_DIRS
         "."
         "board"
+        "bmp"
         "storage"
         "media"
         "settings"
@@ -31,5 +34,6 @@ idf_component_register(
         "updater"
         "wifi"
         "web"
+        "webp"
 
 )
