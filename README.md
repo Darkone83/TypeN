@@ -8,7 +8,7 @@
 
 </div>
 
-**TypeN** is an ESP32-P4-powered 800×800 round media display with touch control, SD-backed media playback, local Wi-Fi management, and rollback-safe firmware updates.
+**TypeN** is an ESP32-P4-powered 800×800 round media display with touch control, broad still-image and GIF support, SD-backed playback, local Wi-Fi management, and rollback-safe firmware updates.
 
 The project is designed around a simple goal: load media onto the device, choose what to display, and manage it locally without requiring an external router or Internet connection.
 
@@ -18,16 +18,20 @@ The project is designed around a simple goal: load media onto the device, choose
 
 - 800×800 round MIPI-DSI display
 - Direct framebuffer UI with touch control
-- JPEG, PNG, and animated GIF playback
+- JPEG, PNG, animated GIF, BMP, and static WebP playback
 - Center-cover rendering for mixed aspect ratios
 - JPEG EXIF orientation handling
+- PNG and static WebP alpha support
 - Recursive SD-card media discovery
 - Persistent selected media
 - Local thumbnail browser and cache
 - Browser-based media upload, selection, and deletion
 - Local SoftAP and captive-portal style access
+- Optional Admin PIN protection for the management interface
+- On-device and WebUI diagnostics
+- On-device and WebUI factory reset
 - Browser and SD-card firmware updates
-- Dual OTA slots with ESP-IDF rollback support
+- Dual OTA slots with rollback support
 - Separate firmware configurations for:
   - **P4 Pico + external C6 slave**
   - **P4 Pico WiFi / onboard C6**
@@ -40,11 +44,11 @@ TypeN targets the ESP32-P4 platform and the 800×800 JD9365 round display used b
 
 Typical TypeN hardware includes:
 
-- Waveshare ESP32-P4 Nano / P4 Nanao WiFi
+- Waveshare ESP32-P4 Nano / P4 Nano WiFi
 - Waveshare 3.4inch DSI Round Capacitive Touch Display, 800 × 800 Resolution
-- microSD Card (Fat32 Formatted)
+- microSD card (FAT32 formatted)
 - Waveshare ESP32-C6 Zero Wi-Fi coprocessor (only if using the P4 Nano)
-- 32 MB application flash layout
+- 32 MB flash
 - PSRAM-backed media and framebuffer workloads
 
 ### Parts and purchase links
@@ -139,8 +143,11 @@ Do not mix the UART slave firmware/configuration with the onboard SDIO variant.
 - **ESP-IDF 5.5.1**
 - ESP32-P4 toolchain
 - Matching ESP32-C6 slave firmware for the selected hardware variant
+- `simplewebp.h` in `main/webp/` for native static WebP decoding
 
 TypeN intentionally stays on ESP-IDF 5.5.1 for the current hardware/software baseline.
+
+Static WebP support uses the lightweight [SimpleWebP](https://github.com/MikuAuahDark/simplewebp) decoder. The current TypeN integration pins the decoder to commit `d1a728a1f8ec7348ca2a5039b6dd813b83986fbb`.
 
 ---
 
@@ -152,6 +159,14 @@ From an ESP-IDF 5.5.1 environment:
 idf.py set-target esp32p4
 idf.py build
 ```
+
+Before the first build with WebP support, make sure this file exists:
+
+```text
+main/webp/simplewebp.h
+```
+
+If the repository includes the supplied SimpleWebP fetch script, run it once from the project root before building. The fetch helper downloads the pinned decoder revision into `main/webp/simplewebp.h`.
 
 For an already-configured source tree, avoid replacing `sdkconfig` unless you are intentionally changing the hardware variant.
 
@@ -179,18 +194,20 @@ For more detailed setup instructions, see [INSTALL.md](INSTALL.md).
 
 ## Flash layout
 
-The current P4 layout uses 32 MB flash:
+The current TypeN layout keeps OTA metadata and all boot-critical application slots below the 16 MB boundary while retaining the board's 32 MB physical flash:
 
 | Partition | Type | Offset | Size |
 |---|---|---:|---:|
 | NVS | data | `0x00009000` | 24 KB |
 | PHY init | data | `0x0000F000` | 4 KB |
-| Factory | app | `0x00010000` | 8 MB |
-| OTA 0 | app | `0x00810000` | 8 MB |
-| OTA 1 | app | `0x01010000` | 8 MB |
-| OTA data | data | `0x01810000` | 8 KB |
+| OTA data | data | `0x00010000` | 8 KB |
+| Factory | app | `0x00020000` | 5 MB |
+| OTA 0 | app | `0x00520000` | 5 MB |
+| OTA 1 | app | `0x00A20000` | 5 MB |
 
-Rollback support requires:
+`ota_1` ends at `0x00F20000`, so the complete boot/OTA application set remains below 16 MB.
+
+For builds using ESP-IDF automatic rollback, enable:
 
 ```text
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
@@ -257,18 +274,52 @@ Security: Open
 Address: 192.168.4.1
 ```
 
+Management access can optionally be protected with a **4–8 digit Admin PIN** from the TypeN settings page. The PIN protects the management interface rather than changing the SoftAP password.
+
 The web interface provides:
 
 - media library browsing
-- media upload
+- JPEG, PNG, GIF, BMP, and static WebP upload
 - display selection
 - delete confirmation
 - brightness/settings control
+- optional Admin PIN management
+- diagnostics and support information
+- factory reset
 - firmware update
 - update status and rollback information
 - firmware/build identity
 
-No external router is required.
+Admin sessions expire after inactivity, and repeated failed PIN attempts are rate-limited.
+
+### Diagnostics
+
+The WebUI Diagnostics page exposes useful support information including:
+
+- uptime and reset reason
+- internal heap and PSRAM usage
+- SD-card total/free space
+- current media and media count
+- Wi-Fi/IP status
+- firmware version, build, running slot, and image state
+- updater status and rollback availability
+- last browser transfer status
+
+The on-device **System → Diagnostics** page provides a smaller local snapshot of the same core health information.
+
+### Factory reset
+
+Factory reset is available both on-device and from the WebUI.
+
+A factory reset clears TypeN configuration such as:
+
+- selected media
+- brightness
+- upload/thumbnail paths
+- Admin PIN
+- other settings stored in the TypeN NVS namespace
+
+Factory reset **does not erase SD-card media and does not rewrite firmware or OTA partitions**.
 
 ---
 
@@ -276,13 +327,17 @@ No external router is required.
 
 TypeN currently supports:
 
-- JPEG
-- PNG
-- animated GIF
+- **JPEG** — hardware-assisted decode with EXIF orientation handling
+- **PNG** — static images with alpha support
+- **GIF** — static and animated GIF playback
+- **BMP** — uncompressed indexed, 16-bit, 24-bit, and 32-bit Windows BMP variants
+- **WebP** — static lossy and lossless WebP, including alpha
+
+Animated WebP is intentionally not supported. If a WebP file advertises animation, TypeN rejects it rather than displaying only a partial frame sequence.
+
+BMP support covers the common uncompressed forms used in normal image workflows, including palette-based BMP and RGB555/RGB565 bitfields. RLE-compressed BMP is not currently supported.
 
 Playback uses center-cover rendering so content fills the round 800×800 display without stretching.
-
-The current JPEG path also honors EXIF orientation.
 
 Local thumbnails are generated and cached separately from playback media, and the cache directory is excluded from recursive media discovery.
 
@@ -392,18 +447,3 @@ idf.py monitor
 ```
 
 A full flash is also required whenever the bootloader or partition table changes.
-
----
-
-## Project status
-
-TypeN's current firmware baseline includes working display, touch, SD media, local UI, browser management, and rollback-safe application updates.
-
-The hardware variant determines only how the ESP32-P4 communicates with the ESP32-C6:
-
-```text
-External C6       → UART
-Onboard WiFi C6   → SDIO
-```
-
-Everything above that transport layer remains the same TypeN product experience.
