@@ -42,7 +42,7 @@ Typical TypeN hardware includes:
 
 - Waveshare ESP32-P4 Nano / P4 Nanao WiFi
 - Waveshare 3.4inch DSI Round Capacitive Touch Display, 800 × 800 Resolution
-- microSD storage
+- microSD Card (Fat32 Formatted)
 - Waveshare ESP32-C6 Zero Wi-Fi coprocessor (only if using the P4 Nano)
 - 32 MB application flash layout
 - PSRAM-backed media and framebuffer workloads
