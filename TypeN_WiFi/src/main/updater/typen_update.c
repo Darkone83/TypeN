@@ -134,6 +134,225 @@ static void copy_fixed_text(
 }
 
 
+typedef struct {
+    char version[TYPEN_UPDATE_VERSION_MAX];
+    char variant[TYPEN_UPDATE_VARIANT_MAX];
+    uint16_t firmware_abi;
+} typen_firmware_identity_t;
+
+static const char *variant_name_from_token(
+    const char *token)
+{
+    if (!token) {
+        return NULL;
+    }
+
+    if (strcmp(token, "uart") == 0) {
+        return "P4-UART";
+    }
+
+    if (strcmp(token, "sdio") == 0) {
+        return "P4-SDIO";
+    }
+
+    return NULL;
+}
+
+static bool release_version_is_valid(
+    const char *version)
+{
+    if (!version ||
+        !*version) {
+        return false;
+    }
+
+    const char *p = version;
+
+    for (int field = 0;
+         field < 3;
+         ++field) {
+        if (*p < '0' ||
+            *p > '9') {
+            return false;
+        }
+
+        while (*p >= '0' &&
+               *p <= '9') {
+            ++p;
+        }
+
+        if (field < 2) {
+            if (*p != '.') {
+                return false;
+            }
+
+            ++p;
+        }
+    }
+
+    if (*p == '\0') {
+        return true;
+    }
+
+    /*
+     * Optional SemVer prerelease suffix such as -beta.1 or -rc.2.
+     * TypeN reserves '+' build metadata for hardware/ABI identity.
+     */
+    if (*p != '-') {
+        return false;
+    }
+
+    ++p;
+
+    if (*p == '\0') {
+        return false;
+    }
+
+    while (*p) {
+        const char ch = *p++;
+
+        const bool allowed =
+            (ch >= '0' && ch <= '9') ||
+            (ch >= 'A' && ch <= 'Z') ||
+            (ch >= 'a' && ch <= 'z') ||
+            ch == '-' ||
+            ch == '.';
+
+        if (!allowed) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool parse_firmware_identity(
+    const char *raw_version,
+    size_t raw_version_size,
+    typen_firmware_identity_t *identity)
+{
+    if (!identity) {
+        return false;
+    }
+
+    memset(
+        identity,
+        0,
+        sizeof(*identity)
+    );
+
+    char text[TYPEN_UPDATE_VERSION_MAX];
+
+    copy_fixed_text(
+        text,
+        sizeof(text),
+        raw_version,
+        raw_version_size
+    );
+
+    if (text[0] == '\0') {
+        return false;
+    }
+
+    char *plus =
+        strchr(
+            text,
+            '+'
+        );
+
+    if (!plus ||
+        plus == text ||
+        plus[1] == '\0') {
+        return false;
+    }
+
+    *plus = '\0';
+
+    if (!release_version_is_valid(
+            text)) {
+        return false;
+    }
+
+    copy_fixed_text(
+        identity->version,
+        sizeof(identity->version),
+        text,
+        strlen(text)
+    );
+
+    char *metadata =
+        plus + 1;
+
+    char *dot =
+        strchr(
+            metadata,
+            '.'
+        );
+
+    if (!dot ||
+        dot == metadata ||
+        dot[1] == '\0') {
+        return false;
+    }
+
+    *dot = '\0';
+
+    const char *variant_name =
+        variant_name_from_token(
+            metadata
+        );
+
+    if (!variant_name) {
+        return false;
+    }
+
+    copy_fixed_text(
+        identity->variant,
+        sizeof(identity->variant),
+        variant_name,
+        strlen(variant_name)
+    );
+
+    const char *abi_text =
+        dot + 1;
+
+    if (strncmp(
+            abi_text,
+            "abi",
+            3) != 0) {
+        return false;
+    }
+
+    abi_text += 3;
+
+    if (*abi_text < '0' ||
+        *abi_text > '9') {
+        return false;
+    }
+
+    char *end = NULL;
+
+    unsigned long abi =
+        strtoul(
+            abi_text,
+            &end,
+            10
+        );
+
+    if (end == abi_text ||
+        *end != '\0' ||
+        abi == 0 ||
+        abi > UINT16_MAX) {
+        return false;
+    }
+
+    identity->firmware_abi =
+        (uint16_t)abi;
+
+    return true;
+}
+
+
 static const char *ota_image_state_name(
     esp_ota_img_states_t state)
 {
@@ -328,12 +547,40 @@ static void collect_runtime_status(
         esp_app_get_description();
 
     if (running_desc) {
-        copy_fixed_text(
-            status->running_version,
-            sizeof(status->running_version),
-            running_desc->version,
-            sizeof(running_desc->version)
-        );
+        typen_firmware_identity_t identity;
+
+        if (parse_firmware_identity(
+                running_desc->version,
+                sizeof(running_desc->version),
+                &identity)) {
+            copy_fixed_text(
+                status->running_version,
+                sizeof(status->running_version),
+                identity.version,
+                strlen(identity.version)
+            );
+
+            copy_fixed_text(
+                status->running_variant,
+                sizeof(status->running_variant),
+                identity.variant,
+                strlen(identity.variant)
+            );
+
+            status->running_firmware_abi =
+                identity.firmware_abi;
+        } else {
+            /*
+             * Keep raw ESP-IDF version visible for diagnostics if an older
+             * pre-versioning build is ever encountered.
+             */
+            copy_fixed_text(
+                status->running_version,
+                sizeof(status->running_version),
+                running_desc->version,
+                sizeof(running_desc->version)
+            );
+        }
 
         copy_fixed_text(
             status->running_project,
@@ -428,6 +675,193 @@ static void set_info_message(
     );
 }
 
+static esp_err_t validate_candidate_identity(
+    const esp_app_desc_t *candidate,
+    typen_update_sd_info_t *info,
+    const char *source_name)
+{
+    if (!candidate ||
+        !info) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    copy_fixed_text(
+        info->project_name,
+        sizeof(info->project_name),
+        candidate->project_name,
+        sizeof(candidate->project_name)
+    );
+
+    typen_firmware_identity_t candidate_identity;
+
+    if (!parse_firmware_identity(
+            candidate->version,
+            sizeof(candidate->version),
+            &candidate_identity)) {
+        set_info_message(
+            info,
+            "Firmware is missing a valid embedded TypeN identity"
+        );
+
+        ESP_LOGW(
+            TAG,
+            "%s OTA preflight: invalid embedded firmware identity",
+            source_name ? source_name : "Firmware"
+        );
+
+        return ESP_ERR_INVALID_VERSION;
+    }
+
+    copy_fixed_text(
+        info->version,
+        sizeof(info->version),
+        candidate_identity.version,
+        strlen(candidate_identity.version)
+    );
+
+    copy_fixed_text(
+        info->variant,
+        sizeof(info->variant),
+        candidate_identity.variant,
+        strlen(candidate_identity.variant)
+    );
+
+    info->firmware_abi =
+        candidate_identity.firmware_abi;
+
+    const esp_app_desc_t *running_desc =
+        esp_app_get_description();
+
+    if (!running_desc) {
+        set_info_message(
+            info,
+            "Unable to read the running TypeN firmware identity"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    char running_project[
+        TYPEN_UPDATE_PROJECT_MAX
+    ] = {0};
+
+    copy_fixed_text(
+        running_project,
+        sizeof(running_project),
+        running_desc->project_name,
+        sizeof(running_desc->project_name)
+    );
+
+    if (running_project[0] == '\0' ||
+        info->project_name[0] == '\0' ||
+        strcmp(
+            running_project,
+            info->project_name) != 0) {
+        set_info_message(
+            info,
+            "Firmware project does not match the running TypeN application"
+        );
+
+        ESP_LOGW(
+            TAG,
+            "%s OTA preflight: project mismatch current=%s new=%s",
+            source_name ? source_name : "Firmware",
+            running_project[0]
+                ? running_project
+                : "unknown",
+            info->project_name[0]
+                ? info->project_name
+                : "unknown"
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    typen_firmware_identity_t running_identity;
+
+    if (!parse_firmware_identity(
+            running_desc->version,
+            sizeof(running_desc->version),
+            &running_identity)) {
+        set_info_message(
+            info,
+            "Running firmware does not contain a valid TypeN identity"
+        );
+
+        ESP_LOGE(
+            TAG,
+            "%s OTA preflight: running firmware identity is invalid",
+            source_name ? source_name : "Firmware"
+        );
+
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (strcmp(
+            running_identity.variant,
+            candidate_identity.variant) != 0) {
+        char message[
+            TYPEN_UPDATE_MESSAGE_MAX
+        ];
+
+        snprintf(
+            message,
+            sizeof(message),
+            "Wrong hardware variant: unit=%s image=%s",
+            running_identity.variant,
+            candidate_identity.variant
+        );
+
+        set_info_message(
+            info,
+            message
+        );
+
+        ESP_LOGW(
+            TAG,
+            "%s OTA preflight: variant mismatch current=%s new=%s",
+            source_name ? source_name : "Firmware",
+            running_identity.variant,
+            candidate_identity.variant
+        );
+
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (running_identity.firmware_abi !=
+        candidate_identity.firmware_abi) {
+        char message[
+            TYPEN_UPDATE_MESSAGE_MAX
+        ];
+
+        snprintf(
+            message,
+            sizeof(message),
+            "Firmware ABI mismatch: unit=%u image=%u",
+            (unsigned)running_identity.firmware_abi,
+            (unsigned)candidate_identity.firmware_abi
+        );
+
+        set_info_message(
+            info,
+            message
+        );
+
+        ESP_LOGW(
+            TAG,
+            "%s OTA preflight: ABI mismatch current=%u new=%u",
+            source_name ? source_name : "Firmware",
+            (unsigned)running_identity.firmware_abi,
+            (unsigned)candidate_identity.firmware_abi
+        );
+
+        return ESP_ERR_INVALID_VERSION;
+    }
+
+    return ESP_OK;
+}
+
+
 static void set_message_locked(
     typen_update_state_t state,
     const char *message)
@@ -506,6 +940,9 @@ static esp_err_t reserve_operation(
     s_status.total_bytes = 0;
     s_status.written_bytes = 0;
     s_status.target_partition[0] = '\0';
+    s_status.target_version[0] = '\0';
+    s_status.target_variant[0] = '\0';
+    s_status.target_firmware_abi = 0;
 
     set_message_locked(
         state,
@@ -884,6 +1321,41 @@ static esp_err_t writer_finish(void)
             &installed_desc
         ) == ESP_OK;
 
+    typen_update_sd_info_t installed_info;
+    memset(
+        &installed_info,
+        0,
+        sizeof(installed_info)
+    );
+
+    if (!have_installed_desc) {
+        set_error_and_release(
+            "Unable to read installed firmware identity"
+        );
+
+        return ESP_ERR_INVALID_VERSION;
+    }
+
+    err =
+        validate_candidate_identity(
+            &installed_desc,
+            &installed_info,
+            "Installed"
+        );
+
+    if (err != ESP_OK) {
+        set_error_and_release(
+            installed_info.message[0]
+                ? installed_info.message
+                : "Installed firmware identity is invalid"
+        );
+
+        return err;
+    }
+
+    const char *installed_version =
+        installed_info.version;
+
     err =
         esp_ota_set_boot_partition(
             target
@@ -902,11 +1374,6 @@ static esp_err_t writer_finish(void)
 
         return err;
     }
-
-    const char *installed_version =
-        have_installed_desc
-            ? installed_desc.version
-            : "";
 
     (void)save_update_record(
         TYPEN_UPDATE_RESULT_PENDING,
@@ -941,6 +1408,16 @@ static esp_err_t writer_finish(void)
         installed_version,
         strlen(installed_version)
     );
+
+    copy_fixed_text(
+        s_status.target_variant,
+        sizeof(s_status.target_variant),
+        installed_info.variant,
+        strlen(installed_info.variant)
+    );
+
+    s_status.target_firmware_abi =
+        installed_info.firmware_abi;
 
     if (installed_version[0] != '\0') {
         snprintf(
@@ -1219,11 +1696,15 @@ esp_err_t typen_update_init(void)
 
     ESP_LOGI(
         TAG,
-        "Updater ready; running=%s version=%s state=%s boot=%s rollback=%s OTA slots=%u",
+        "Updater ready; running=%s version=%s variant=%s ABI=%u state=%s boot=%s rollback=%s OTA slots=%u",
         initial.running_partition,
         initial.running_version[0]
             ? initial.running_version
             : "unknown",
+        initial.running_variant[0]
+            ? initial.running_variant
+            : "unknown",
+        (unsigned)initial.running_firmware_abi,
         initial.image_state[0]
             ? initial.image_state
             : "unknown",
@@ -1294,12 +1775,26 @@ esp_err_t typen_update_confirm_running(void)
     ] = {0};
 
     if (description) {
-        copy_fixed_text(
-            version,
-            sizeof(version),
-            description->version,
-            sizeof(description->version)
-        );
+        typen_firmware_identity_t identity;
+
+        if (parse_firmware_identity(
+                description->version,
+                sizeof(description->version),
+                &identity)) {
+            copy_fixed_text(
+                version,
+                sizeof(version),
+                identity.version,
+                strlen(identity.version)
+            );
+        } else {
+            copy_fixed_text(
+                version,
+                sizeof(version),
+                description->version,
+                sizeof(description->version)
+            );
+        }
     }
 
     (void)save_update_record(
@@ -1481,70 +1976,48 @@ esp_err_t typen_update_check_image_prefix(
         return ESP_ERR_INVALID_ARG;
     }
 
-    copy_fixed_text(
-        info->version,
-        sizeof(info->version),
-        app_desc.version,
-        sizeof(app_desc.version)
-    );
-
-    copy_fixed_text(
-        info->project_name,
-        sizeof(info->project_name),
-        app_desc.project_name,
-        sizeof(app_desc.project_name)
-    );
-
-    const esp_app_desc_t *running_desc =
-        esp_app_get_description();
-
-    if (running_desc) {
-        char current_project[
-            TYPEN_UPDATE_PROJECT_MAX
-        ] = {0};
-
-        copy_fixed_text(
-            current_project,
-            sizeof(current_project),
-            running_desc->project_name,
-            sizeof(running_desc->project_name)
+    esp_err_t identity_err =
+        validate_candidate_identity(
+            &app_desc,
+            info,
+            "Browser"
         );
 
-        if (current_project[0] != '\0' &&
-            (info->project_name[0] == '\0' ||
-             strcmp(
-                 current_project,
-                 info->project_name) != 0)) {
-            set_info_message(
-                info,
-                "Firmware project does not match the running TypeN application"
-            );
-
-            ESP_LOGW(
-                TAG,
-                "Browser OTA preflight: project mismatch current=%s new=%s",
-                current_project,
-                info->project_name
-            );
-
-            return ESP_ERR_INVALID_ARG;
-        }
+    if (identity_err != ESP_OK) {
+        return identity_err;
     }
+
+    char ready_message[
+        TYPEN_UPDATE_MESSAGE_MAX
+    ];
+
+    snprintf(
+        ready_message,
+        sizeof(ready_message),
+        "TypeN %s %s ABI %u is ready to install",
+        info->version,
+        info->variant,
+        (unsigned)info->firmware_abi
+    );
 
     set_info_message(
         info,
-        "Firmware image is ready to install"
+        ready_message
     );
 
     ESP_LOGI(
         TAG,
-        "Browser OTA preflight OK: project=%s version=%s size=%u target=%s",
+        "Browser OTA preflight OK: project=%s version=%s variant=%s ABI=%u size=%u target=%s",
         info->project_name[0]
             ? info->project_name
             : "unknown",
         info->version[0]
             ? info->version
             : "unknown",
+        info->variant[0]
+            ? info->variant
+            : "unknown",
+        (unsigned)info->firmware_abi,
         (unsigned)info->image_size,
         info->target_partition
     );
@@ -1608,6 +2081,16 @@ esp_err_t typen_update_upload_begin_checked(
         info->version,
         strlen(info->version)
     );
+
+    copy_fixed_text(
+        s_status.target_variant,
+        sizeof(s_status.target_variant),
+        info->variant,
+        strlen(info->variant)
+    );
+
+    s_status.target_firmware_abi =
+        info->firmware_abi;
 
     if (info->target_partition[0] != '\0') {
         copy_label(
@@ -1910,64 +2393,38 @@ esp_err_t typen_update_check_sd(
         return ESP_ERR_INVALID_ARG;
     }
 
-    copy_fixed_text(
-        info->version,
-        sizeof(info->version),
-        app_desc.version,
-        sizeof(app_desc.version)
-    );
-
-    copy_fixed_text(
-        info->project_name,
-        sizeof(info->project_name),
-        app_desc.project_name,
-        sizeof(app_desc.project_name)
-    );
-
-    const esp_app_desc_t *running_desc =
-        esp_app_get_description();
-
-    if (running_desc) {
-        char current_project[
-            TYPEN_UPDATE_PROJECT_MAX
-        ];
-
-        copy_fixed_text(
-            current_project,
-            sizeof(current_project),
-            running_desc->project_name,
-            sizeof(running_desc->project_name)
+    esp_err_t identity_err =
+        validate_candidate_identity(
+            &app_desc,
+            info,
+            "SD"
         );
 
-        if (current_project[0] != '\0' &&
-            info->project_name[0] != '\0' &&
-            strcmp(
-                current_project,
-                info->project_name) != 0) {
-            set_info_message(
-                info,
-                "Firmware project does not match the running TypeN application"
-            );
-
-            ESP_LOGW(
-                TAG,
-                "SD OTA preflight: project mismatch current=%s new=%s",
-                current_project,
-                info->project_name
-            );
-
-            return ESP_ERR_INVALID_ARG;
-        }
+    if (identity_err != ESP_OK) {
+        return identity_err;
     }
+
+    char ready_message[
+        TYPEN_UPDATE_MESSAGE_MAX
+    ];
+
+    snprintf(
+        ready_message,
+        sizeof(ready_message),
+        "TypeN %s %s ABI %u is ready to install",
+        info->version,
+        info->variant,
+        (unsigned)info->firmware_abi
+    );
 
     set_info_message(
         info,
-        "Firmware image is ready to install"
+        ready_message
     );
 
     ESP_LOGI(
         TAG,
-        "SD OTA preflight OK: path=%s project=%s version=%s size=%u target=%s",
+        "SD OTA preflight OK: path=%s project=%s version=%s variant=%s ABI=%u size=%u target=%s",
         path,
         info->project_name[0]
             ? info->project_name
@@ -1975,6 +2432,10 @@ esp_err_t typen_update_check_sd(
         info->version[0]
             ? info->version
             : "unknown",
+        info->variant[0]
+            ? info->variant
+            : "unknown",
+        (unsigned)info->firmware_abi,
         (unsigned)info->image_size,
         info->target_partition
     );
@@ -2035,6 +2496,16 @@ esp_err_t typen_update_start_sd(
         info.version,
         strlen(info.version)
     );
+
+    copy_fixed_text(
+        s_status.target_variant,
+        sizeof(s_status.target_variant),
+        info.variant,
+        strlen(info.variant)
+    );
+
+    s_status.target_firmware_abi =
+        info.firmware_abi;
 
     snprintf(
         s_status.message,

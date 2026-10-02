@@ -280,6 +280,10 @@ static const char INDEX_HTML[] =
 ".confirm-card h3{margin:0 0 8px;font-size:18px}.confirm-card p{margin:0;color:#9fb0a6;font-size:13px;line-height:1.5;overflow-wrap:anywhere}\n"
 ".confirm-name{margin-top:12px;padding:10px 12px;border-radius:12px;background:#0a0f0c;border:1px solid #26332b;font:12px ui-monospace,SFMono-Regular,Consolas,monospace;color:#e7efe9;white-space:pre-wrap;overflow-wrap:anywhere}\n"
 ".confirm-actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:16px}.upload-detail{min-height:18px;color:#8fa198;font-size:11px;line-height:1.45}\n"
+".secret-trigger{user-select:none;-webkit-user-select:none;touch-action:manipulation}\n"
+".easter-card{border-color:#7f2da8;background:linear-gradient(160deg,#160b19,#111217);box-shadow:0 24px 80px #000d,0 0 42px rgba(221,45,214,.18)}\n"
+".easter-kicker{margin-bottom:7px;color:#e92bd8;font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}\n"
+".btn.easter{background:linear-gradient(135deg,#71259c,#df2bcf);border-color:#e83ada;color:#fff}.confirm-actions.single{grid-template-columns:1fr}\n"
 ".mobilebar{\n"
 "  position:fixed;z-index:30;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(4,1fr);\n"
 "  padding:7px 8px calc(7px + env(safe-area-inset-bottom));background:rgba(8,11,9,.94);\n"
@@ -449,10 +453,12 @@ static const char INDEX_HTML[] =
 "              <div class=\"card-title\"><div><div class=\"eyebrow\">Updater</div><h2>Firmware status</h2></div><span class=\"badge\" id=\"updateState\">IDLE</span></div>\n"
 "              <div class=\"update-status\">\n"
 "                <div class=\"update-status-row\"><span>Current version</span><strong id=\"runningVersion\">—</strong></div>\n"
+"                <div class=\"update-status-row\"><span>Current identity</span><strong id=\"runningIdentity\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Running slot</span><strong id=\"runningSlot\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Boot slot</span><strong id=\"bootSlot\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Image state</span><strong id=\"imageState\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>New version</span><strong id=\"targetVersion\">—</strong></div>\n"
+"                <div class=\"update-status-row\"><span>New identity</span><strong id=\"targetIdentity\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Target slot</span><strong id=\"targetSlot\">—</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Progress</span><strong id=\"updatePercent\">0%</strong></div>\n"
 "                <div class=\"update-status-row\"><span>Status</span><strong id=\"updateMessage\">Updater ready</strong></div>\n"
@@ -488,7 +494,9 @@ static const char INDEX_HTML[] =
 "        <article class=\"card\" style=\"margin-top:14px\">\n"
 "          <div class=\"card-title\"><div><div class=\"eyebrow\">Firmware</div><h2>System identity</h2></div></div>\n"
 "          <div class=\"setting-row\"><b>Version</b><span id=\"aboutVersion\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>Build</b><span id=\"aboutBuild\">—</span></div>\n"
+"          <div class=\"setting-row\"><b>Hardware variant</b><span id=\"aboutVariant\">—</span></div>\n"
+"          <div class=\"setting-row\"><b>Firmware ABI</b><span id=\"aboutAbi\">—</span></div>\n"
+"          <div id=\"aboutBuildTrigger\" class=\"setting-row secret-trigger\"><b>Build</b><span id=\"aboutBuild\">—</span></div>\n"
 "          <div class=\"setting-row\"><b>Application slot</b><span id=\"aboutSlot\">—</span></div>\n"
 "          <div class=\"setting-row\"><b>Image state</b><span id=\"aboutImageState\">—</span></div>\n"
 "          <div class=\"setting-row\"><b>ESP-IDF</b><span id=\"aboutIdf\">—</span></div>\n"
@@ -522,11 +530,20 @@ static const char INDEX_HTML[] =
 "    <div class=\"confirm-actions\"><button class=\"btn ghost\" onclick=\"closeUpdateConfirm()\">Cancel</button><button id=\"updateConfirmButton\" class=\"btn primary\" onclick=\"confirmUpdateAction()\">Install update</button></div>\n"
 "  </div>\n"
 "</div>\n"
+"<div id=\"easterModal\" class=\"confirm-backdrop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"easterTitle\">\n"
+"  <div class=\"confirm-card easter-card\">\n"
+"    <div class=\"easter-kicker\">Darkone83 hidden mode</div>\n"
+"    <h3 id=\"easterTitle\">Easter egg active</h3>\n"
+"    <p>The rotating Darkone83 wireframe is now active on the TypeN display.</p>\n"
+"    <div class=\"confirm-actions single\"><button id=\"easterExitButton\" class=\"btn easter\" onclick=\"exitEasterEgg()\">Exit</button></div>\n"
+"  </div>\n"
+"</div>\n"
 "<div id=\"toast\" class=\"toast\"></div>\n"
 "\n"
 "<script>\n"
 "const $=q=>document.querySelector(q), $$=q=>[...document.querySelectorAll(q)];\n"
 "let media=[], info={};\n"
+"let easterTapCount=0,easterTapReset=0,easterPollTimer=0,easterBusy=false;\n"
 "\n"
 "function esc(v){return String(v == null ? '' : v).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]))}\n"
 "function size(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return(n/1048576).toFixed(1)+' MB'}\n"
@@ -538,6 +555,44 @@ static const char INDEX_HTML[] =
 "  window.scrollTo({top:0,behavior:'smooth'});\n"
 "}\n"
 "$$('[data-view]').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));\n"
+"\n"
+"function showEasterEggModal(){\n"
+"  $(\'#easterModal\').classList.add(\'show\');\n"
+"  if(!easterPollTimer)easterPollTimer=setInterval(pollEasterEggStatus,700);\n"
+"}\n"
+"function hideEasterEggModal(){\n"
+"  $(\'#easterModal\').classList.remove(\'show\');\n"
+"  if(easterPollTimer){clearInterval(easterPollTimer);easterPollTimer=0}\n"
+"}\n"
+"async function pollEasterEggStatus(){\n"
+"  try{\n"
+"    const r=await fetch(\'/api/info\',{cache:\'no-store\'});if(!r.ok)return;\n"
+"    const s=await r.json();if(!s.easterEggActive)hideEasterEggModal();\n"
+"  }catch(e){}\n"
+"}\n"
+"async function startEasterEgg(){\n"
+"  if(easterBusy)return;easterBusy=true;\n"
+"  try{\n"
+"    const r=await fetch(\'/api/easter-egg/start\',{method:\'POST\',cache:\'no-store\'});\n"
+"    if(!r.ok)throw new Error((await r.text())||\'Unable to start Easter egg\');\n"
+"    showEasterEggModal();\n"
+"  }catch(e){toast(e.message||\'Unable to start Easter egg\')}finally{easterBusy=false}\n"
+"}\n"
+"async function exitEasterEgg(){\n"
+"  if(easterBusy)return;easterBusy=true;const b=$(\'#easterExitButton\');b.disabled=true;b.textContent=\'Exiting…\';\n"
+"  try{\n"
+"    const r=await fetch(\'/api/easter-egg/exit\',{method:\'POST\',cache:\'no-store\'});\n"
+"    if(!r.ok)throw new Error((await r.text())||\'Unable to exit Easter egg\');\n"
+"    hideEasterEggModal();toast(\'Easter egg closed\');\n"
+"  }catch(e){toast(e.message||\'Unable to exit Easter egg\')}finally{b.disabled=false;b.textContent=\'Exit\';easterBusy=false}\n"
+"}\n"
+"function handleBuildEasterTap(){\n"
+"  clearTimeout(easterTapReset);easterTapCount++;\n"
+"  easterTapReset=setTimeout(()=>{easterTapCount=0},2500);\n"
+"  if(easterTapCount<5)return;\n"
+"  clearTimeout(easterTapReset);easterTapCount=0;startEasterEgg();\n"
+"}\n"
+"$(\'#aboutBuildTrigger\').addEventListener(\'click\',handleBuildEasterTap);\n"
 "\n"
 "async function loadInfo(){\n"
 "  try{\n"
@@ -551,10 +606,13 @@ static const char INDEX_HTML[] =
 "    $('#brightnessSlider').value=String(b);\n"
 "    $('#brightnessValue').textContent=b+'%';\n"
 "    $('#aboutVersion').textContent=info.version||'—';\n"
+"    $('#aboutVariant').textContent=info.firmwareVariant||'—';\n"
+"    $('#aboutAbi').textContent=info.firmwareAbi?String(info.firmwareAbi):'—';\n"
 "    $('#aboutBuild').textContent=info.build||'—';\n"
 "    $('#aboutSlot').textContent=info.runningSlot||'—';\n"
 "    $('#aboutImageState').textContent=info.imageState||'—';\n"
 "    $('#aboutIdf').textContent=info.idfVersion||'—';\n"
+"    if(info.easterEggActive)showEasterEggModal();else if($('#easterModal').classList.contains('show'))hideEasterEggModal();\n"
 "  }catch(e){$('#ip').textContent='TypeN local'}\n"
 "}\n"
 "\n"
@@ -811,10 +869,12 @@ static const char INDEX_HTML[] =
 "    const pct=total>0?Math.max(0,Math.min(100,(written/total)*100)):0;\n"
 "    setUpdateBadge(state);\n"
 "    $('#runningVersion').textContent=u.runningVersion||'—';\n"
+"    $('#runningIdentity').textContent=u.runningVariant?`${u.runningVariant} · ABI ${u.runningAbi||'?'}`:'—';\n"
 "    $('#runningSlot').textContent=u.running||'—';\n"
 "    $('#bootSlot').textContent=u.boot||'—';\n"
 "    $('#imageState').textContent=u.imageState||'—';\n"
 "    $('#targetVersion').textContent=u.targetVersion||'—';\n"
+"    $('#targetIdentity').textContent=u.targetVariant?`${u.targetVariant} · ABI ${u.targetAbi||'?'}`:'—';\n"
 "    $('#targetSlot').textContent=u.target||'—';\n"
 "    $('#lastUpdateResult').textContent=(u.lastResult||'none').replace('_',' ').toUpperCase();\n"
 "    $('#lastUpdateVersion').textContent=u.lastVersion||'—';\n"
@@ -878,7 +938,7 @@ static const char INDEX_HTML[] =
 "      {kind:'browser',file:f,info:info},\n"
 "      'Install uploaded firmware?',\n"
 "      'The file has passed the TypeN application checks. Installation writes the inactive OTA slot and reboots only after full ESP-IDF verification.',\n"
-"      `${f.name}\\nProject: ${info.project||'TypeN'}\\nVersion: ${info.version||'unknown'}\\nSize: ${size(info.size)}\\nSlot: ${info.running||'current'} → ${info.target||'inactive'}`\n"
+"      `${f.name}\\nProject: ${info.project||'TypeN'}\\nVersion: ${info.version||'unknown'}\\nVariant: ${info.variant||'unknown'}\\nFirmware ABI: ${info.abi||'unknown'}\\nSize: ${size(info.size)}\\nSlot: ${info.running||'current'} → ${info.target||'inactive'}`\n"
 "    );\n"
 "  }catch(e){\n"
 "    setUpdateBadge('error');\n"
@@ -911,7 +971,7 @@ static const char INDEX_HTML[] =
 "      {kind:'sd',path:path,info:info},\n"
 "      'Install firmware from SD?',\n"
 "      'The file has passed the TypeN preflight checks. Installation writes the inactive OTA slot and reboots only after verification.',\n"
-"      `${path}\\nProject: ${info.project||'TypeN'}\\nVersion: ${info.version||'unknown'}\\nSize: ${size(info.size)}\\nSlot: ${info.running||'current'} → ${info.target||'inactive'}`\n"
+"      `${path}\\nProject: ${info.project||'TypeN'}\\nVersion: ${info.version||'unknown'}\\nVariant: ${info.variant||'unknown'}\\nFirmware ABI: ${info.abi||'unknown'}\\nSize: ${size(info.size)}\\nSlot: ${info.running||'current'} → ${info.target||'inactive'}`\n"
 "    );\n"
 "  }catch(e){\n"
 "    setUpdateBadge('error');\n"
@@ -2576,7 +2636,7 @@ static esp_err_t info_get(
 
     send_json_string(
         req,
-        app_desc ? app_desc->version : ""
+        update_status.running_version
     );
 
     httpd_resp_send_chunk(
@@ -2588,6 +2648,32 @@ static esp_err_t info_get(
     send_json_string(
         req,
         app_desc ? app_desc->project_name : ""
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"firmwareVariant\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        update_status.running_variant
+    );
+
+    char identity_tail[64];
+
+    snprintf(
+        identity_tail,
+        sizeof(identity_tail),
+        ",\"firmwareAbi\":%u",
+        (unsigned)update_status.running_firmware_abi
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        identity_tail,
+        HTTPD_RESP_USE_STRLEN
     );
 
     httpd_resp_send_chunk(
@@ -2634,14 +2720,17 @@ static esp_err_t info_get(
         update_status.image_state
     );
 
-    char tail[96];
+    char tail[128];
 
     snprintf(
         tail,
         sizeof(tail),
-        ",\"brightness\":%u,\"mediaCount\":%u}",
+        ",\"brightness\":%u,\"mediaCount\":%u,\"easterEggActive\":%s}",
         (unsigned)brightness,
-        (unsigned)typen_media_count()
+        (unsigned)typen_media_count(),
+        typen_ui_easter_egg_active()
+            ? "true"
+            : "false"
     );
 
     httpd_resp_send_chunk(
@@ -2654,6 +2743,80 @@ static esp_err_t info_get(
         req,
         NULL,
         0
+    );
+}
+
+static esp_err_t easter_egg_start_post(
+    httpd_req_t *req)
+{
+    esp_err_t err =
+        typen_ui_easter_egg_start();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Web Easter egg start failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to start Easter egg"
+        );
+    }
+
+    httpd_resp_set_type(
+        req,
+        "application/json"
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Cache-Control",
+        "no-store"
+    );
+
+    return httpd_resp_sendstr(
+        req,
+        "{\"active\":true}"
+    );
+}
+
+static esp_err_t easter_egg_exit_post(
+    httpd_req_t *req)
+{
+    esp_err_t err =
+        typen_ui_easter_egg_exit();
+
+    if (err != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Web Easter egg exit failed: %s",
+            esp_err_to_name(err)
+        );
+
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to exit Easter egg"
+        );
+    }
+
+    httpd_resp_set_type(
+        req,
+        "application/json"
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Cache-Control",
+        "no-store"
+    );
+
+    return httpd_resp_sendstr(
+        req,
+        "{\"active\":false}"
     );
 }
 
@@ -3058,6 +3221,32 @@ static esp_err_t update_sd_check_get(
 
     httpd_resp_send_chunk(
         req,
+        ",\"variant\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        info.variant
+    );
+
+    char identity_tail[64];
+
+    snprintf(
+        identity_tail,
+        sizeof(identity_tail),
+        ",\"abi\":%u",
+        (unsigned)info.firmware_abi
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        identity_tail,
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    httpd_resp_send_chunk(
+        req,
         ",\"running\":",
         HTTPD_RESP_USE_STRLEN
     );
@@ -3172,8 +3361,18 @@ static esp_err_t update_status_get(
     );
 
     SEND_STATUS_STRING(
+        "runningVariant",
+        status.running_variant
+    );
+
+    SEND_STATUS_STRING(
         "targetVersion",
         status.target_version
+    );
+
+    SEND_STATUS_STRING(
+        "targetVariant",
+        status.target_variant
     );
 
     SEND_STATUS_STRING(
@@ -3215,12 +3414,14 @@ static esp_err_t update_status_get(
 
 #undef SEND_STATUS_STRING
 
-    char tail[192];
+    char tail[256];
 
     snprintf(
         tail,
         sizeof(tail),
-        ",\"total\":%llu,\"written\":%llu,\"reboot\":%s,\"rollbackPossible\":%s}",
+        ",\"runningAbi\":%u,\"targetAbi\":%u,\"total\":%llu,\"written\":%llu,\"reboot\":%s,\"rollbackPossible\":%s}",
+        (unsigned)status.running_firmware_abi,
+        (unsigned)status.target_firmware_abi,
         (unsigned long long)status.total_bytes,
         (unsigned long long)status.written_bytes,
         status.reboot_scheduled
@@ -3405,6 +3606,32 @@ static esp_err_t update_upload_check_post(
     send_json_string(
         req,
         info.project_name
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"variant\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        info.variant
+    );
+
+    char identity_tail[64];
+
+    snprintf(
+        identity_tail,
+        sizeof(identity_tail),
+        ",\"abi\":%u",
+        (unsigned)info.firmware_abi
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        identity_tail,
+        HTTPD_RESP_USE_STRLEN
     );
 
     httpd_resp_send_chunk(
@@ -4790,6 +5017,16 @@ esp_err_t typen_web_start(
             .uri = "/api/info",
             .method = HTTP_GET,
             .handler = info_get
+        },
+        {
+            .uri = "/api/easter-egg/start",
+            .method = HTTP_POST,
+            .handler = easter_egg_start_post
+        },
+        {
+            .uri = "/api/easter-egg/exit",
+            .method = HTTP_POST,
+            .handler = easter_egg_exit_post
         },
         {
             .uri = "/api/settings",

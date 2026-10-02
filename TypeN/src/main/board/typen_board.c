@@ -464,12 +464,17 @@ esp_err_t typen_board_present(void)
     );
 }
 
-esp_err_t typen_board_touch_sample(
+esp_err_t typen_board_touch_sample_points(
     uint16_t *x,
     uint16_t *y,
-    bool *pressed)
+    uint8_t max_points,
+    uint8_t *point_count)
 {
-    if (!x || !y || !pressed) {
+    if (!x ||
+        !y ||
+        !point_count ||
+        max_points == 0 ||
+        max_points > TYPEN_TOUCH_MAX_POINTS) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -485,22 +490,55 @@ esp_err_t typen_board_touch_sample(
         "touch read failed"
     );
 
-    uint16_t xs[1] = {0};
-    uint16_t ys[1] = {0};
-    uint16_t strength[1] = {0};
+    uint16_t strength[TYPEN_TOUCH_MAX_POINTS] = {0};
     uint8_t count = 0;
 
     const bool touched =
         esp_lcd_touch_get_coordinates(
             s_touch,
-            xs,
-            ys,
+            x,
+            y,
             strength,
             &count,
-            1
+            max_points
         );
 
-    if (touched && count > 0) {
+    *point_count =
+        touched
+            ? count
+            : 0;
+
+    return ESP_OK;
+}
+
+esp_err_t typen_board_touch_sample(
+    uint16_t *x,
+    uint16_t *y,
+    bool *pressed)
+{
+    if (!x ||
+        !y ||
+        !pressed) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint16_t xs[1] = {0};
+    uint16_t ys[1] = {0};
+    uint8_t count = 0;
+
+    esp_err_t err =
+        typen_board_touch_sample_points(
+            xs,
+            ys,
+            1,
+            &count
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (count > 0) {
         *x = xs[0];
         *y = ys[0];
         *pressed = true;

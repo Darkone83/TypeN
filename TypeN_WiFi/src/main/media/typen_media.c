@@ -488,51 +488,84 @@ esp_err_t typen_media_delete(
         return ESP_ERR_INVALID_ARG;
     }
 
-    typen_media_item_t item;
+    /*
+     * Do not call typen_media_scan() here.
+     *
+     * Local deletes run inside the 4 KiB typen_touch_ui task. The recursive
+     * scanner carries path buffers at each recursion level, which can overflow
+     * that task stack. Delete the file and update the live catalog in place.
+     */
+    bool catalogued = false;
 
-    esp_err_t err =
-        typen_media_find(
-            path,
-            &item
-        );
+    xSemaphoreTake(s_lock, portMAX_DELAY);
 
-    if (err != ESP_OK) {
-        return err;
+    for (size_t i = 0; i < s_count; ++i) {
+        if (strcmp(s_items[i].path, path) == 0) {
+            catalogued = true;
+            break;
+        }
     }
 
-    /*
-     * This API is intentionally path-based. Do not let a basename-only match
-     * delete a different file when duplicate names exist in separate folders.
-     */
-    if (strcmp(item.path, path) != 0) {
+    xSemaphoreGive(s_lock);
+
+    if (!catalogued) {
         return ESP_ERR_NOT_FOUND;
     }
 
     errno = 0;
 
-    if (remove(item.path) != 0) {
+    if (remove(path) != 0) {
         const int delete_errno = errno;
 
         ESP_LOGE(
             TAG,
             "Delete failed: %s errno=%d",
-            item.path,
+            path,
             delete_errno
         );
 
         return ESP_FAIL;
     }
 
+    /*
+     * Remove the deleted path from the current sorted catalog. If another
+     * task rescanned between remove() and this lock, the entry may already
+     * be absent; the filesystem delete still succeeded.
+     */
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+
+    for (size_t i = 0; i < s_count; ++i) {
+        if (strcmp(s_items[i].path, path) == 0) {
+            if (i + 1U < s_count) {
+                memmove(
+                    &s_items[i],
+                    &s_items[i + 1U],
+                    (s_count - i - 1U) *
+                        sizeof(s_items[0])
+                );
+            }
+
+            --s_count;
+
+            memset(
+                &s_items[s_count],
+                0,
+                sizeof(s_items[0])
+            );
+
+            break;
+        }
+    }
+
+    xSemaphoreGive(s_lock);
+
     ESP_LOGI(
         TAG,
         "Deleted media: %s",
-        item.path
+        path
     );
 
-    /*
-     * Keep all catalog users coherent immediately after a local delete.
-     */
-    return typen_media_scan();
+    return ESP_OK;
 }
 
 const char *typen_media_type_name(

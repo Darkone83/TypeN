@@ -12,6 +12,7 @@ idf_component_register(
         "gif/typen_gif.c"
         "gif/gifdec.c"
         "ui/typen_ui.c"
+        "ui/typen_ui_misc.c"
         "updater/typen_update.c"
         "wifi/typen_wifi.c"
         "web/typen_web.c"

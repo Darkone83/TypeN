@@ -13,6 +13,8 @@ extern "C" {
 #define TYPEN_LCD_W 800
 #define TYPEN_LCD_H 800
 
+#define TYPEN_TOUCH_MAX_POINTS 5
+
 esp_err_t typen_board_display_early_start(void);
 esp_err_t typen_board_ui_start(void);
 
@@ -44,6 +46,16 @@ esp_err_t typen_board_touch_sample(
     uint16_t *x,
     uint16_t *y,
     bool *pressed);
+
+/*
+ * Multi-touch companion to typen_board_touch_sample().
+ * The existing single-point API remains unchanged for normal callers.
+ */
+esp_err_t typen_board_touch_sample_points(
+    uint16_t *x,
+    uint16_t *y,
+    uint8_t max_points,
+    uint8_t *point_count);
 
 esp_err_t typen_board_set_brightness(uint8_t percent);
 uint32_t typen_board_first_frame_ms(void);

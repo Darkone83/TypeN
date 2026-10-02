@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -25,6 +26,16 @@ void typen_ui_set_media_count(size_t count);
  */
 esp_err_t typen_ui_set_brightness(uint8_t percent);
 uint8_t typen_ui_get_brightness(void);
+
+/*
+ * Hidden wireframe Easter egg control.
+ *
+ * These wrappers own the pause/start/restore lifecycle so local touch and
+ * WebUI activation cannot fight over playback state.
+ */
+esp_err_t typen_ui_easter_egg_start(void);
+esp_err_t typen_ui_easter_egg_exit(void);
+bool typen_ui_easter_egg_active(void);
 
 /*
  * Media rendering is intentionally deferred until the UX pass is locked.

@@ -15,6 +15,7 @@ extern "C" {
 #define TYPEN_UPDATE_LABEL_MAX         17
 #define TYPEN_UPDATE_VERSION_MAX       32
 #define TYPEN_UPDATE_PROJECT_MAX       32
+#define TYPEN_UPDATE_VARIANT_MAX       16
 
 #define TYPEN_UPDATE_DEFAULT_SD_PATH \
     "/sdcard/typen/update/TypeN.bin"
@@ -51,7 +52,12 @@ typedef struct {
 
     char running_version[TYPEN_UPDATE_VERSION_MAX];
     char running_project[TYPEN_UPDATE_PROJECT_MAX];
+    char running_variant[TYPEN_UPDATE_VARIANT_MAX];
+    uint16_t running_firmware_abi;
+
     char target_version[TYPEN_UPDATE_VERSION_MAX];
+    char target_variant[TYPEN_UPDATE_VARIANT_MAX];
+    uint16_t target_firmware_abi;
 
     char image_state[24];
 
@@ -67,8 +73,16 @@ typedef struct {
 
 typedef struct {
     size_t image_size;
+
+    /*
+     * Parsed from esp_app_desc_t.version inside the firmware .bin.
+     * Filename/sidecar metadata is never used as firmware identity.
+     */
     char version[TYPEN_UPDATE_VERSION_MAX];
     char project_name[TYPEN_UPDATE_PROJECT_MAX];
+    char variant[TYPEN_UPDATE_VARIANT_MAX];
+    uint16_t firmware_abi;
+
     char running_partition[TYPEN_UPDATE_LABEL_MAX];
     char target_partition[TYPEN_UPDATE_LABEL_MAX];
     char message[TYPEN_UPDATE_MESSAGE_MAX];

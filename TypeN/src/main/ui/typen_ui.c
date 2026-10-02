@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "esp_err.h"
@@ -15,6 +16,7 @@
 #include "typen_settings.h"
 #include "typen_thumb_cache.h"
 #include "typen_ui.h"
+#include "typen_ui_misc.h"
 
 #define SAFE_X                  125
 #define SAFE_Y                  125
@@ -23,6 +25,7 @@
 
 #define TOUCH_POLL_MS            20
 #define LONG_PRESS_MS           700
+#define MISC_LONG_PRESS_MS     2000
 #define TAP_MOVE_LIMIT           24
 
 #define C_BLACK             0x0000
@@ -72,6 +75,7 @@ static const char *TAG = "typen_ui";
 
 static uint16_t *s_fb = NULL;
 static TaskHandle_t s_touch_task = NULL;
+static SemaphoreHandle_t s_misc_control_lock = NULL;
 
 static bool s_menu_visible = false;
 static typen_page_t s_page = PAGE_HOME;
@@ -614,24 +618,22 @@ static void draw_media_card(
         MEDIA_THUMB_H
     );
 
-    /*
-     * Small destructive-action target in the thumbnail's upper-right corner.
-     * Touch hit-testing uses these same dimensions before the card itself.
-     */
     const int delete_x =
-        x + 11 + MEDIA_THUMB_W -
+        x + 11 +
+        MEDIA_THUMB_W -
         MEDIA_DELETE_W -
         MEDIA_DELETE_MARGIN;
 
     const int delete_y =
-        y + 9 + MEDIA_DELETE_MARGIN;
+        y + 9 +
+        MEDIA_DELETE_MARGIN;
 
     stroke_round_rect(
         delete_x,
         delete_y,
         MEDIA_DELETE_W,
         MEDIA_DELETE_H,
-        9,
+        10,
         1,
         C_WARN,
         C_PANEL_PRESSED
@@ -1773,10 +1775,6 @@ static void handle_subpage_tap(int x, int y)
                 card_y[slot] + 9 +
                 MEDIA_DELETE_MARGIN;
 
-            /*
-             * Destructive target must be tested before the whole media card,
-             * otherwise tapping X would fall through to SET MEDIA.
-             */
             if (point_in(
                     x, y,
                     delete_x,
@@ -1855,12 +1853,30 @@ static void handle_menu_tap(int x, int y)
     }
 }
 
+static void restore_after_misc(void)
+{
+    esp_err_t err =
+        typen_ui_easter_egg_exit();
+
+    if (err != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Easter egg exit request failed: %s",
+            esp_err_to_name(err)
+        );
+    }
+}
+
 static void touch_task(void *arg)
 {
     (void)arg;
 
     bool was_down = false;
     bool long_fired = false;
+
+    bool two_touch_active = false;
+    bool suppress_until_release = false;
+    TickType_t two_touch_tick = 0;
 
     uint16_t down_x = 0;
     uint16_t down_y = 0;
@@ -1870,17 +1886,125 @@ static void touch_task(void *arg)
     TickType_t down_tick = 0;
 
     for (;;) {
-        uint16_t x = 0;
-        uint16_t y = 0;
-        bool down = false;
+        uint16_t xs[2] = {0};
+        uint16_t ys[2] = {0};
+        uint8_t point_count = 0;
 
         esp_err_t err =
-            typen_board_touch_sample(&x, &y, &down);
+            typen_board_touch_sample_points(
+                xs,
+                ys,
+                2,
+                &point_count
+            );
 
         if (err != ESP_OK) {
-            vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    TOUCH_POLL_MS
+                )
+            );
             continue;
         }
+
+        /*
+         * While the Easter egg is running the normal UI remains dormant.
+         * The touch task only watches the explicit bottom-center EXIT button.
+         */
+        if (typen_ui_misc_is_active()) {
+            was_down = false;
+            long_fired = false;
+            two_touch_active = false;
+
+            if (point_count > 0 &&
+                typen_ui_misc_exit_hit(
+                    xs[0],
+                    ys[0]
+                )) {
+                restore_after_misc();
+                suppress_until_release = true;
+            }
+
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    TOUCH_POLL_MS
+                )
+            );
+            continue;
+        }
+
+        /*
+         * The EXIT tap may still be physically held for a few samples after
+         * the renderer closes. Consume that release so it cannot immediately
+         * become the normal 700 ms menu gesture.
+         */
+        if (suppress_until_release) {
+            if (point_count == 0) {
+                suppress_until_release = false;
+            }
+
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    TOUCH_POLL_MS
+                )
+            );
+            continue;
+        }
+
+        /*
+         * Hidden trigger:
+         * two simultaneous touch points held for roughly two seconds.
+         *
+         * Multi-touch is consumed here before the normal one-finger long
+         * press so the 700 ms menu gesture cannot fire underneath it.
+         */
+        if (!s_menu_visible &&
+            point_count >= 2) {
+            was_down = false;
+            long_fired = false;
+
+            if (!two_touch_active) {
+                two_touch_active = true;
+                two_touch_tick =
+                    xTaskGetTickCount();
+            } else if (
+                (xTaskGetTickCount() -
+                 two_touch_tick) >=
+                    pdMS_TO_TICKS(
+                        MISC_LONG_PRESS_MS
+                    )) {
+                two_touch_active = false;
+
+                esp_err_t misc_err =
+                    typen_ui_easter_egg_start();
+
+                if (misc_err != ESP_OK) {
+                    ESP_LOGE(
+                        TAG,
+                        "Unable to start Easter egg: %s",
+                        esp_err_to_name(misc_err)
+                    );
+                }
+            }
+
+            vTaskDelay(
+                pdMS_TO_TICKS(
+                    TOUCH_POLL_MS
+                )
+            );
+            continue;
+        }
+
+        two_touch_active = false;
+
+        const bool down =
+            point_count > 0;
+
+        const uint16_t x =
+            down ? xs[0] : 0;
+
+        const uint16_t y =
+            down ? ys[0] : 0;
 
         if (down) {
             last_x = x;
@@ -1891,27 +2015,36 @@ static void touch_task(void *arg)
                 long_fired = false;
                 down_x = x;
                 down_y = y;
-                down_tick = xTaskGetTickCount();
+                down_tick =
+                    xTaskGetTickCount();
             } else if (!s_menu_visible &&
                        !long_fired &&
-                       (xTaskGetTickCount() - down_tick) >=
-                           pdMS_TO_TICKS(LONG_PRESS_MS)) {
+                       (xTaskGetTickCount() -
+                        down_tick) >=
+                           pdMS_TO_TICKS(
+                               LONG_PRESS_MS
+                           )) {
                 long_fired = true;
 
-                /*
-                 * Drain any playback framebuffer update before drawing UI.
-                 * GIF timing also freezes while the menu is visible.
-                 */
                 typen_playback_pause(true);
                 typen_thumb_cache_set_paused(false);
 
                 s_menu_visible = true;
                 draw_home();
-                ESP_LOGI(TAG, "Menu opened by long press");
+
+                ESP_LOGI(
+                    TAG,
+                    "Menu opened by long press"
+                );
             }
         } else if (was_down) {
-            int dx = (int)last_x - (int)down_x;
-            int dy = (int)last_y - (int)down_y;
+            int dx =
+                (int)last_x -
+                (int)down_x;
+
+            int dy =
+                (int)last_y -
+                (int)down_y;
 
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
@@ -1920,7 +2053,10 @@ static void touch_task(void *arg)
                 !long_fired &&
                 dx <= TAP_MOVE_LIMIT &&
                 dy <= TAP_MOVE_LIMIT) {
-                handle_menu_tap(last_x, last_y);
+                handle_menu_tap(
+                    last_x,
+                    last_y
+                );
             }
 
             was_down = false;
@@ -1938,7 +2074,11 @@ static void touch_task(void *arg)
             }
         }
 
-        vTaskDelay(pdMS_TO_TICKS(TOUCH_POLL_MS));
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                TOUCH_POLL_MS
+            )
+        );
     }
 }
 
@@ -1952,6 +2092,15 @@ esp_err_t typen_ui_init(void)
 
     if (s_fb == NULL) {
         return ESP_ERR_INVALID_STATE;
+    }
+
+    if (s_misc_control_lock == NULL) {
+        s_misc_control_lock =
+            xSemaphoreCreateMutex();
+
+        if (s_misc_control_lock == NULL) {
+            return ESP_ERR_NO_MEM;
+        }
     }
 
     uint8_t saved_brightness =
@@ -2127,6 +2276,128 @@ esp_err_t typen_ui_set_brightness(
 uint8_t typen_ui_get_brightness(void)
 {
     return s_brightness;
+}
+
+esp_err_t typen_ui_easter_egg_start(void)
+{
+    if (s_misc_control_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(
+        s_misc_control_lock,
+        portMAX_DELAY
+    );
+
+    if (typen_ui_misc_is_active()) {
+        xSemaphoreGive(
+            s_misc_control_lock
+        );
+
+        return ESP_OK;
+    }
+
+    /*
+     * Web activation can happen while the local menu is open. Drop the local
+     * menu state before the renderer takes over so the touch task cannot
+     * return to an invisible menu after the Easter egg exits.
+     */
+    s_menu_visible = false;
+    s_page = PAGE_HOME;
+    s_media_confirm_visible = false;
+    s_media_confirm_mode =
+        MEDIA_CONFIRM_SET;
+
+    typen_playback_pause(true);
+    typen_thumb_cache_set_paused(true);
+
+    esp_err_t err =
+        typen_ui_misc_start();
+
+    if (err != ESP_OK) {
+        if (typen_playback_has_frame()) {
+            (void)typen_playback_restore();
+        } else {
+            draw_idle();
+        }
+
+        typen_playback_pause(false);
+    } else {
+        ESP_LOGI(
+            TAG,
+            "Wireframe Easter egg opened"
+        );
+    }
+
+    xSemaphoreGive(
+        s_misc_control_lock
+    );
+
+    return err;
+}
+
+esp_err_t typen_ui_easter_egg_exit(void)
+{
+    if (s_misc_control_lock == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    xSemaphoreTake(
+        s_misc_control_lock,
+        portMAX_DELAY
+    );
+
+    if (!typen_ui_misc_is_active()) {
+        xSemaphoreGive(
+            s_misc_control_lock
+        );
+
+        return ESP_OK;
+    }
+
+    typen_ui_misc_request_exit();
+
+    while (typen_ui_misc_is_active()) {
+        vTaskDelay(
+            pdMS_TO_TICKS(5)
+        );
+    }
+
+    if (typen_playback_has_frame()) {
+        esp_err_t restore_err =
+            typen_playback_restore();
+
+        if (restore_err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "playback restore after Easter egg failed: %s",
+                esp_err_to_name(restore_err)
+            );
+
+            draw_idle();
+        }
+    } else {
+        draw_idle();
+    }
+
+    typen_thumb_cache_set_paused(true);
+    typen_playback_pause(false);
+
+    ESP_LOGI(
+        TAG,
+        "Wireframe Easter egg closed"
+    );
+
+    xSemaphoreGive(
+        s_misc_control_lock
+    );
+
+    return ESP_OK;
+}
+
+bool typen_ui_easter_egg_active(void)
+{
+    return typen_ui_misc_is_active();
 }
 
 esp_err_t typen_ui_show_media(
