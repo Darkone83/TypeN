@@ -9,6 +9,7 @@
 #include <stdint.h>
 #include <setjmp.h>
 #include <sys/stat.h>
+#include "esp_vfs_fat.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,6 +17,7 @@
 #include "esp_http_server.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_app_desc.h"
@@ -47,6 +49,17 @@ static bool s_thumb_catalog_signature_valid = false;
 #define BROWSER_UPDATE_PREFIX_BYTES              512
 #define BROWSER_UPDATE_BUFFER_BYTES             8192
 #define BROWSER_UPDATE_MAX_CONSECUTIVE_TIMEOUTS    6
+
+#define ADMIN_SESSION_TOKEN_BYTES                 16
+#define ADMIN_SESSION_TOKEN_HEX                   33
+#define ADMIN_SESSION_IDLE_US      INT64_C(1800000000)
+#define ADMIN_FAIL_LIMIT                            5
+#define ADMIN_LOCKOUT_US             INT64_C(30000000)
+
+static char s_admin_session[ADMIN_SESSION_TOKEN_HEX] = {0};
+static int64_t s_admin_session_last_us = 0;
+static unsigned s_admin_failures = 0;
+static int64_t s_admin_lockout_until_us = 0;
 
 typedef struct {
     bool valid;
@@ -206,6 +219,16 @@ static const char INDEX_HTML[] =
 ".btn.primary{background:var(--green2);border-color:var(--green2);color:#061009}\n"
 ".btn.ghost{background:#0c110e}.btn.danger{color:#ffb2b8;border-color:#4b2a2e;background:#1a1012}\n"
 ".btn:disabled{opacity:.45;cursor:not-allowed}\n"
+".btn:focus-visible,.search:focus-visible,.field input[type=text]:focus-visible,.field input[type=password]:focus-visible,.filepick:focus-within{outline:2px solid #69e492;outline-offset:2px}\n"
+".confirm-card .btn{min-height:46px}\n"
+".confirm-kicker{margin-bottom:7px;color:var(--green);font-size:10px;font-weight:900;letter-spacing:.14em;text-transform:uppercase}\n"
+".confirm-card.danger-confirm{border-color:#5a3135}.confirm-card.danger-confirm .confirm-kicker{color:#ff9ca5}\n"
+".auth-gate{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;padding:18px;background:rgba(4,7,5,.92);backdrop-filter:blur(14px)}\n"
+".auth-gate.hidden{display:none}.auth-card{width:min(100%,390px);background:#111713;border:1px solid #31503b;border-radius:20px;padding:22px;box-shadow:0 24px 80px #000c}\n"
+".auth-card h2{margin:0 0 7px;font-size:22px}.auth-card p{margin:0 0 16px;color:var(--muted);font-size:13px;line-height:1.5}.auth-status{min-height:18px;margin-top:10px;color:#ffb2b8;font-size:12px}\n"
+".field input[type=password]{width:100%;min-height:48px;border:1px solid #2d3b33;border-radius:12px;background:#0d120f;color:var(--text);padding:10px 12px;outline:none;font-size:18px;letter-spacing:.16em}\n"
+".field input[type=password]:focus{border-color:#3c7651;box-shadow:0 0 0 3px rgba(72,214,124,.08)}\n"
+".danger-card{border-color:#4b2a2e}.danger-card .eyebrow{color:#ff9ba4}\n"
 ".progress{height:7px;border-radius:99px;background:#0a0e0c;overflow:hidden;border:1px solid #1b2620}\n"
 ".progress>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--green2),#7cf0a5);transition:width .18s}\n"
 ".update-status{display:grid;gap:9px}\n"
@@ -228,7 +251,18 @@ static const char INDEX_HTML[] =
 "  display:grid;grid-template-columns:104px minmax(0,1fr);gap:12px;align-items:center;\n"
 "  padding:11px;border:1px solid #233028;border-radius:15px;background:#0d120f\n"
 "}\n"
-".media.selected{border-color:#357a50;background:#102017;box-shadow:inset 0 0 0 1px rgba(72,214,124,.08)}\n"
+".media.active{border-color:#48d67c;background:#102017;box-shadow:inset 4px 0 0 #48d67c,inset 0 0 0 1px rgba(72,214,124,.12),0 0 18px rgba(72,214,124,.06)}\n"
+".media.active .media-name{color:#dcffe7}\n"
+".active-state{color:#7cf0a5;font-weight:850;letter-spacing:.04em}\n"
+".identity-hero{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;padding:18px;border:1px solid #26372d;border-radius:18px;background:linear-gradient(145deg,#0b120e,#111a14)}\n"
+".identity-main small{display:block;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.09em;margin-bottom:5px}\n"
+".identity-version{font-size:34px;font-weight:900;line-height:1;letter-spacing:-.04em}\n"
+".identity-chips{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:7px}.identity-chip{padding:7px 10px;border-radius:999px;border:1px solid #2c4535;background:#101a13;color:#b9d6c2;font-size:11px;font-weight:800}\n"
+".about-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}\n"
+".system-value{overflow-wrap:anywhere}.system-value.good{color:#7cf0a5}\n"
+"@media(max-width:760px){.identity-hero{align-items:flex-start;flex-direction:column}.identity-chips{justify-content:flex-start}.about-grid{grid-template-columns:1fr}}\n"
+".btn:not(:disabled):active{transform:translateY(1px) scale(.985);filter:brightness(1.08)}\n"
+".btn.active-btn{background:#14271a;border-color:#3e714d;color:#bff5cf;opacity:1;cursor:default}\n"
 ".thumb{\n"
 "  position:relative;width:104px;aspect-ratio:196/88;border-radius:12px;overflow:hidden;\n"
 "  display:grid;place-items:center;background:radial-gradient(circle at 35% 25%,#1f3929,#0b100d 68%);\n"
@@ -242,7 +276,7 @@ static const char INDEX_HTML[] =
 ".media-meta{display:flex;gap:7px;align-items:center;margin-top:7px;color:#84958c;font-size:11px}\n"
 ".badge{padding:2px 7px;border-radius:999px;background:#17231b;border:1px solid #294033;color:#a7d7b7;font-size:10px;font-weight:800}\n"
 ".media-actions{grid-column:1/-1;display:flex;gap:7px}\n"
-".media-actions .btn{flex:1;min-height:40px;font-size:12px}\n"
+".media-actions .btn{flex:1;min-height:44px;font-size:12px}\n"
 ".empty{padding:28px 10px;text-align:center;color:var(--muted)}\n"
 ".section-stack{display:grid;gap:14px}\n"
 ".setting-row{\n"
@@ -285,7 +319,7 @@ static const char INDEX_HTML[] =
 ".easter-kicker{margin-bottom:7px;color:#e92bd8;font-size:10px;font-weight:900;letter-spacing:.16em;text-transform:uppercase}\n"
 ".btn.easter{background:linear-gradient(135deg,#71259c,#df2bcf);border-color:#e83ada;color:#fff}.confirm-actions.single{grid-template-columns:1fr}\n"
 ".mobilebar{\n"
-"  position:fixed;z-index:30;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(4,1fr);\n"
+"  position:fixed;z-index:30;left:0;right:0;bottom:0;display:grid;grid-template-columns:repeat(5,1fr);\n"
 "  padding:7px 8px calc(7px + env(safe-area-inset-bottom));background:rgba(8,11,9,.94);\n"
 "  backdrop-filter:blur(18px);border-top:1px solid #233028\n"
 "}\n"
@@ -314,6 +348,16 @@ static const char INDEX_HTML[] =
 "</style>\n"
 "</head>\n"
 "<body>\n"
+"<div id=\"authGate\" class=\"auth-gate\">\n"
+"  <div class=\"auth-card\">\n"
+"    <div class=\"eyebrow\" style=\"margin-bottom:6px\">TypeN management</div>\n"
+"    <h2>Admin PIN</h2>\n"
+"    <p>Enter the device PIN to manage media, settings, or firmware.</p>\n"
+"    <div class=\"field\"><label for=\"authPin\">PIN</label><input id=\"authPin\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" minlength=\"4\" maxlength=\"8\" autocomplete=\"current-password\"></div>\n"
+"    <div class=\"save-row\"><button id=\"authUnlockBtn\" class=\"btn primary\" onclick=\"unlockAdmin()\">Unlock</button></div>\n"
+"    <div id=\"authStatusText\" class=\"auth-status\"></div>\n"
+"  </div>\n"
+"</div>\n"
 "<div class=\"app\">\n"
 "  <header class=\"topbar\">\n"
 "    <div class=\"brand\">\n"
@@ -328,6 +372,7 @@ static const char INDEX_HTML[] =
 "      <button class=\"active\" data-view=\"media\">Media</button>\n"
 "      <button data-view=\"settings\">Settings</button>\n"
 "      <button data-view=\"update\">Update</button>\n"
+"      <button data-view=\"diagnostics\">Diagnostics</button>\n"
 "      <button data-view=\"about\">About</button>\n"
 "    </nav>\n"
 "\n"
@@ -341,7 +386,7 @@ static const char INDEX_HTML[] =
 "        <div class=\"grid dashboard\">\n"
 "          <div class=\"section-stack\">\n"
 "            <article class=\"card now-playing\">\n"
-"              <div class=\"card-title\"><div><div class=\"eyebrow\">Now displaying</div><h2 id=\"selectedName\">No media selected</h2></div><span class=\"badge\" id=\"selectedType\">IDLE</span></div>\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">Active media</div><h2 id=\"selectedName\">No active media</h2></div><span class=\"badge\" id=\"selectedType\">IDLE</span></div>\n"
 "              <div class=\"now-path\" id=\"selectedPath\">—</div>\n"
 "            </article>\n"
 "\n"
@@ -361,7 +406,7 @@ static const char INDEX_HTML[] =
 "              <div class=\"upload-zone\">\n"
 "                <label class=\"filepick\">\n"
 "                  <input id=\"file\" type=\"file\" accept=\".jpg,.jpeg,.png,.gif,image/jpeg,image/png,image/gif\">\n"
-"                  <div><strong id=\"fileLabel\">Choose an image or GIF</strong><span>Tap to browse this device</span></div>\n"
+"                  <div><strong id=\"fileLabel\">Choose JPEG, PNG, or GIF</strong><span>Tap to browse this device</span></div>\n"
 "                </label>\n"
 "                <div><div class=\"muted\" style=\"font-size:11px;margin-bottom:4px\">Destination</div><div class=\"pathline\" id=\"uploadPath\">…</div></div>\n"
 "                <div class=\"progress\"><i id=\"uploadProgress\"></i></div>\n"
@@ -371,13 +416,14 @@ static const char INDEX_HTML[] =
 "            </article>\n"
 "\n"
 "            <article class=\"card\">\n"
-"              <div class=\"card-title\"><div><div class=\"eyebrow\">Device</div><h2>At a glance</h2></div></div>\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">System</div><h2>At a glance</h2></div></div>\n"
 "              <div class=\"stats\">\n"
 "                <div class=\"stat\"><b id=\"statMedia\">0</b><span>Media</span></div>\n"
-"                <div class=\"stat\"><b>800</b><span>Pixels</span></div>\n"
-"                <div class=\"stat\"><b>32</b><span>MB PSRAM</span></div>\n"
-"                <div class=\"stat\"><b>SD</b><span>Primary</span></div>\n"
+"                <div class=\"stat\"><b id=\"statActive\">IDLE</b><span>Active</span></div>\n"
+"                <div class=\"stat\"><b id=\"statVersion\">—</b><span>Firmware</span></div>\n"
+"                <div class=\"stat\"><b id=\"statSlot\">—</b><span>App slot</span></div>\n"
 "              </div>\n"
+"              <div class=\"setting-row\" style=\"margin-top:12px\"><b>Wi-Fi</b><span id=\"statIp\" class=\"system-value good\">—</span></div>\n"
 "            </article>\n"
 "          </div>\n"
 "        </div>\n"
@@ -400,7 +446,7 @@ static const char INDEX_HTML[] =
 "            </div>\n"
 "\n"
 "            <div class=\"field\">\n"
-"              <label>Selected media</label>\n"
+"              <label>Active media</label>\n"
 "              <div class=\"readonly-box\" id=\"settingsSelectedPath\">None</div>\n"
 "            </div>\n"
 "\n"
@@ -412,6 +458,22 @@ static const char INDEX_HTML[] =
 "            <div class=\"range-head\"><div><b>Panel backlight</b><div class=\"muted\" style=\"font-size:12px;margin-top:3px\">Shared with the physical TypeN display menu</div></div><div class=\"range-value\" id=\"brightnessValue\">40%</div></div>\n"
 "            <input class=\"range\" id=\"brightnessSlider\" type=\"range\" min=\"5\" max=\"100\" step=\"1\" value=\"40\">\n"
 "            <div class=\"save-row\"><button class=\"btn primary\" onclick=\"saveBrightness()\">Apply brightness</button></div>\n"
+"          </article>\n"
+"\n"
+"          <article class=\"card\">\n"
+"            <div class=\"card-title\"><div><div class=\"eyebrow\">Security</div><h2>Admin PIN</h2></div><span class=\"badge\" id=\"adminPinState\">Off</span></div>\n"
+"            <div class=\"notice\">The TypeN Wi-Fi network stays quick to join. When enabled, the PIN protects the management page and API instead.</div>\n"
+"            <div class=\"field\">\n"
+"              <label for=\"adminPinInput\">New admin PIN</label>\n"
+"              <input id=\"adminPinInput\" type=\"password\" inputmode=\"numeric\" pattern=\"[0-9]*\" minlength=\"4\" maxlength=\"8\" autocomplete=\"new-password\" placeholder=\"4–8 digits\">\n"
+"            </div>\n"
+"            <div class=\"actions\" style=\"margin-top:13px\"><button class=\"btn primary\" onclick=\"saveAdminPin()\">Set / change PIN</button><button id=\"disableAdminPinBtn\" class=\"btn ghost\" onclick=\"disableAdminPin()\">Disable PIN</button></div>\n"
+"          </article>\n"
+"\n"
+"          <article class=\"card danger-card\">\n"
+"            <div class=\"card-title\"><div><div class=\"eyebrow\">Recovery</div><h2>Factory reset</h2></div></div>\n"
+"            <div class=\"notice\">Clears TypeN settings, the active-media selection, and the Admin PIN, then reboots. SD media and installed firmware are kept.</div>\n"
+"            <div class=\"save-row\"><button class=\"btn danger\" onclick=\"openFactoryReset()\">Factory reset</button></div>\n"
 "          </article>\n"
 "\n"
 "          <article class=\"card\">\n"
@@ -482,24 +544,83 @@ static const char INDEX_HTML[] =
 "        </div>\n"
 "      </section>\n"
 "\n"
+"      <section id=\"view-diagnostics\" class=\"view\">\n"
+"        <div class=\"hero\"><div><h1>Diagnostics</h1><p>Live device health and support information from the current TypeN session.</p></div><div class=\"hero-meta\"><button class=\"btn ghost\" onclick=\"loadDiagnostics()\">Refresh</button></div></div>\n"
+"        <div class=\"grid dashboard\">\n"
+"          <div class=\"section-stack\">\n"
+"            <article class=\"card\">\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">Runtime</div><h2>Device health</h2></div></div>\n"
+"              <div class=\"setting-row\"><b>Uptime</b><span id=\"diagUptime\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Reset reason</b><span id=\"diagReset\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Internal heap free</b><span id=\"diagHeapFree\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Internal heap minimum</b><span id=\"diagHeapMin\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>PSRAM free</b><span id=\"diagPsramFree\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>PSRAM minimum</b><span id=\"diagPsramMin\">—</span></div>\n"
+"            </article>\n"
+"\n"
+"            <article class=\"card\">\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">Storage</div><h2>SD card</h2></div><span class=\"badge\" id=\"diagSdState\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Total</b><span id=\"diagSdTotal\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Used</b><span id=\"diagSdUsed\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Free</b><span id=\"diagSdFree\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Media files</b><span id=\"diagMediaCount\">—</span></div>\n"
+"              <div class=\"field\" style=\"margin-top:13px\"><label>Active media</label><div class=\"readonly-box pathline\" id=\"diagSelectedPath\">None</div></div>\n"
+"            </article>\n"
+"          </div>\n"
+"\n"
+"          <div class=\"section-stack\">\n"
+"            <article class=\"card\">\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">Firmware</div><h2>Runtime image</h2></div></div>\n"
+"              <div class=\"setting-row\"><b>Version</b><span id=\"diagVersion\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Identity</b><span id=\"diagIdentity\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Running slot</b><span id=\"diagRunningSlot\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Boot slot</b><span id=\"diagBootSlot\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Image state</b><span id=\"diagImageState\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>OTA state</b><span id=\"diagOtaState\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Rollback image</b><span id=\"diagRollback\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>ESP-IDF</b><span id=\"diagIdf\">—</span></div>\n"
+"              <div class=\"field\" style=\"margin-top:13px\"><label>Updater message</label><div class=\"readonly-box\" id=\"diagOtaMessage\">—</div></div>\n"
+"            </article>\n"
+"\n"
+"            <article class=\"card\">\n"
+"              <div class=\"card-title\"><div><div class=\"eyebrow\">Connectivity</div><h2>Management session</h2></div></div>\n"
+"              <div class=\"setting-row\"><b>IP address</b><span id=\"diagIp\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Admin PIN</b><span id=\"diagPin\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Last transfer</b><span id=\"diagTransferState\">None</span></div>\n"
+"              <div class=\"setting-row\"><b>Transfer rate</b><span id=\"diagTransferRate\">—</span></div>\n"
+"              <div class=\"setting-row\"><b>Receive timeouts</b><span id=\"diagTransferTimeouts\">—</span></div>\n"
+"              <div class=\"field\" style=\"margin-top:13px\"><label>Last transfer file</label><div class=\"readonly-box pathline\" id=\"diagTransferFile\">None</div></div>\n"
+"              <div class=\"actions\" style=\"margin-top:13px\"><button class=\"btn ghost\" onclick=\"copyDiagnostics()\">Copy report</button></div>\n"
+"            </article>\n"
+"          </div>\n"
+"        </div>\n"
+"      </section>\n"
+"\n"
 "      <section id=\"view-about\" class=\"view\">\n"
-"        <div class=\"hero\"><div><h1>About TypeN</h1><p>Compact round media display and local control interface.</p></div></div>\n"
-"        <article class=\"card\">\n"
-"          <div class=\"card-title\"><div><div class=\"eyebrow\">Project</div><h2>TypeN</h2></div></div>\n"
-"          <div class=\"setting-row\"><b>Platform</b><span>ESP32-P4 with external ESP32-C6 Wi-Fi coprocessor</span></div>\n"
-"          <div class=\"setting-row\"><b>Display</b><span>800 × 800 round JD9365 MIPI-DSI</span></div>\n"
-"          <div class=\"setting-row\"><b>Media</b><span>JPEG · PNG · GIF · SD-backed library</span></div>\n"
-"          <div class=\"setting-row\"><b>Control</b><span>Local-only responsive web interface; no Internet connection required</span></div>\n"
-"        </article>\n"
+"        <div class=\"hero\"><div><h1>About TypeN</h1><p>Firmware identity, hardware details, and project credits.</p></div></div>\n"
+"        <div class=\"identity-hero\">\n"
+"          <div class=\"identity-main\"><small>TypeN firmware</small><div class=\"identity-version\" id=\"aboutVersion\">—</div></div>\n"
+"          <div class=\"identity-chips\"><span class=\"identity-chip\" id=\"aboutVariant\">—</span><span class=\"identity-chip\">ABI <span id=\"aboutAbi\">—</span></span><span class=\"identity-chip\" id=\"aboutSlot\">—</span></div>\n"
+"        </div>\n"
+"        <div class=\"about-grid\">\n"
+"          <article class=\"card\">\n"
+"            <div class=\"card-title\"><div><div class=\"eyebrow\">Project</div><h2>TypeN</h2></div></div>\n"
+"            <div class=\"setting-row\"><b>Platform</b><span>ESP32-P4 + ESP32-C6</span></div>\n"
+"            <div class=\"setting-row\"><b>Display</b><span>800 × 800 JD9365 MIPI-DSI</span></div>\n"
+"            <div class=\"setting-row\"><b>Media</b><span>JPEG · PNG · GIF</span></div>\n"
+"            <div class=\"setting-row\"><b>Control</b><span>Local touch + local WebUI</span></div>\n"
+"          </article>\n"
+"          <article class=\"card\">\n"
+"            <div class=\"card-title\"><div><div class=\"eyebrow\">Technical</div><h2>Runtime identity</h2></div></div>\n"
+"            <div class=\"setting-row\"><b>Image state</b><span id=\"aboutImageState\">—</span></div>\n"
+"            <div class=\"setting-row\"><b>ESP-IDF</b><span id=\"aboutIdf\">—</span></div>\n"
+"            <div id=\"aboutBuildTrigger\" class=\"setting-row secret-trigger\"><b>Build</b><span id=\"aboutBuild\">—</span></div>\n"
+"          </article>\n"
+"        </div>\n"
 "        <article class=\"card\" style=\"margin-top:14px\">\n"
-"          <div class=\"card-title\"><div><div class=\"eyebrow\">Firmware</div><h2>System identity</h2></div></div>\n"
-"          <div class=\"setting-row\"><b>Version</b><span id=\"aboutVersion\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>Hardware variant</b><span id=\"aboutVariant\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>Firmware ABI</b><span id=\"aboutAbi\">—</span></div>\n"
-"          <div id=\"aboutBuildTrigger\" class=\"setting-row secret-trigger\"><b>Build</b><span id=\"aboutBuild\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>Application slot</b><span id=\"aboutSlot\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>Image state</b><span id=\"aboutImageState\">—</span></div>\n"
-"          <div class=\"setting-row\"><b>ESP-IDF</b><span id=\"aboutIdf\">—</span></div>\n"
+"          <div class=\"card-title\"><div><div class=\"eyebrow\">Credits</div><h2>Project acknowledgements</h2></div></div>\n"
+"          <div class=\"setting-row\"><b>Darkone83</b><span>TypeN design, firmware, and integration</span></div>\n"
+"          <div class=\"setting-row\"><b>Macho Nacho Productions</b><span>Special thanks</span></div>\n"
 "        </article>\n"
 "      </section>\n"
 "\n"
@@ -511,19 +632,22 @@ static const char INDEX_HTML[] =
 "    <button class=\"active\" data-view=\"media\">Media</button>\n"
 "    <button data-view=\"settings\">Settings</button>\n"
 "    <button data-view=\"update\">Update</button>\n"
+"    <button data-view=\"diagnostics\">Diag</button>\n"
 "    <button data-view=\"about\">About</button>\n"
 "  </nav>\n"
 "</div>\n"
 "<div id=\"deleteConfirm\" class=\"confirm-backdrop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"deleteConfirmTitle\">\n"
-"  <div class=\"confirm-card\">\n"
+"  <div class=\"confirm-card danger-confirm\">\n"
+"    <div class=\"confirm-kicker\">Permanent action</div>\n"
 "    <h3 id=\"deleteConfirmTitle\">Delete media?</h3>\n"
-"    <p>This permanently removes the selected file from the TypeN SD card.</p>\n"
+"    <p>This permanently removes this file from the TypeN SD card.</p>\n"
 "    <div id=\"deleteConfirmName\" class=\"confirm-name\"></div>\n"
 "    <div class=\"confirm-actions\"><button class=\"btn ghost\" onclick=\"closeDeleteConfirm()\">Cancel</button><button id=\"deleteConfirmButton\" class=\"btn danger\" onclick=\"confirmDelete()\">Delete</button></div>\n"
 "  </div>\n"
 "</div>\n"
 "<div id=\"updateConfirm\" class=\"confirm-backdrop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"updateConfirmTitle\">\n"
 "  <div class=\"confirm-card\">\n"
+"    <div class=\"confirm-kicker\">Firmware update</div>\n"
 "    <h3 id=\"updateConfirmTitle\">Install firmware?</h3>\n"
 "    <p id=\"updateConfirmText\">TypeN will verify the firmware, install it to the inactive OTA slot, and reboot.</p>\n"
 "    <div id=\"updateConfirmDetails\" class=\"confirm-name\"></div>\n"
@@ -538,23 +662,115 @@ static const char INDEX_HTML[] =
 "    <div class=\"confirm-actions single\"><button id=\"easterExitButton\" class=\"btn easter\" onclick=\"exitEasterEgg()\">Exit</button></div>\n"
 "  </div>\n"
 "</div>\n"
-"<div id=\"toast\" class=\"toast\"></div>\n"
+"<div id=\"factoryResetConfirm\" class=\"confirm-backdrop\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"factoryResetTitle\">\n"
+"  <div class=\"confirm-card danger-confirm\">\n"
+"    <div class=\"confirm-kicker\">Recovery action</div>\n"
+"    <h3 id=\"factoryResetTitle\">Factory reset TypeN?</h3>\n"
+"    <p>This clears device settings, the active-media selection, and Admin PIN. SD media and firmware remain untouched.</p>\n"
+"    <div class=\"confirm-actions\"><button class=\"btn ghost\" onclick=\"closeFactoryReset()\">Cancel</button><button id=\"factoryResetButton\" class=\"btn danger\" onclick=\"confirmFactoryReset()\">Reset &amp; reboot</button></div>\n"
+"  </div>\n"
+"</div>\n"
+"<div id=\"toast\" class=\"toast\" role=\"status\" aria-live=\"polite\"></div>\n"
 "\n"
 "<script>\n"
 "const $=q=>document.querySelector(q), $$=q=>[...document.querySelectorAll(q)];\n"
-"let media=[], info={};\n"
+"let media=[], info={}, diagnostics={};\n"
+"let authState={enabled:false,authenticated:false,lockoutSeconds:0};\n"
+"const nativeFetch=window.fetch.bind(window);\n"
+"window.fetch=async(...args)=>{\n"
+"  const r=await nativeFetch(...args);\n"
+"  const url=String(args[0]||'');\n"
+"  if(r.status===401&&!url.startsWith('/api/auth/'))showAuthGate('Admin session expired.');\n"
+"  return r;\n"
+"};\n"
 "let easterTapCount=0,easterTapReset=0,easterPollTimer=0,easterBusy=false;\n"
 "\n"
 "function esc(v){return String(v == null ? '' : v).replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]))}\n"
-"function size(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';return(n/1048576).toFixed(1)+' MB'}\n"
+"function size(n){n=Number(n)||0;if(n<1024)return n+' B';if(n<1048576)return(n/1024).toFixed(1)+' KB';if(n<1073741824)return(n/1048576).toFixed(1)+' MB';return(n/1073741824).toFixed(2)+' GB'}\n"
+"function duration(ms){ms=Math.max(0,Number(ms)||0);let s=Math.floor(ms/1000),d=Math.floor(s/86400);s%=86400;let h=Math.floor(s/3600);s%=3600;let m=Math.floor(s/60);s%=60;return(d?d+'d ':'')+(h||d?h+'h ':'')+(m||h||d?m+'m ':'')+s+'s'}\n"
 "function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('show');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('show'),2600)}\n"
 "function setView(name){\n"
 "  $$('.view').forEach(v=>v.classList.toggle('active',v.id==='view-'+name));\n"
 "  $$('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===name));\n"
 "  history.replaceState(null,'','#'+name);\n"
 "  window.scrollTo({top:0,behavior:'smooth'});\n"
+"  if(name==='diagnostics'&&managementStarted)loadDiagnostics();\n"
 "}\n"
 "$$('[data-view]').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));\n"
+"\n"
+"function setDialogVisible(id,visible){\n"
+"  const el=$(id);if(!el)return;el.classList.toggle('show',visible);\n"
+"  document.body.style.overflow=$$('.confirm-backdrop.show').length?'hidden':'';\n"
+"}\n"
+"function showAuthGate(message=''){\n"
+"  $('#authGate').classList.remove('hidden');\n"
+"  $('#authStatusText').textContent=message;\n"
+"  setTimeout(()=>$('#authPin').focus(),0);\n"
+"}\n"
+"function hideAuthGate(){\n"
+"  $('#authGate').classList.add('hidden');\n"
+"  $('#authStatusText').textContent='';\n"
+"}\n"
+"function updateAdminPinUi(){\n"
+"  const on=!!authState.enabled;\n"
+"  $('#adminPinState').textContent=on?'On':'Off';\n"
+"  $('#disableAdminPinBtn').disabled=!on;\n"
+"}\n"
+"async function loadAuthStatus(){\n"
+"  try{\n"
+"    const r=await nativeFetch('/api/auth/status',{cache:'no-store'});if(!r.ok)throw 0;\n"
+"    authState=await r.json();updateAdminPinUi();return authState;\n"
+"  }catch(e){authState={enabled:false,authenticated:false,lockoutSeconds:0};return authState}\n"
+"}\n"
+"async function unlockAdmin(){\n"
+"  const pin=$('#authPin').value.trim(),btn=$('#authUnlockBtn');\n"
+"  if(!/^\\d{4,8}$/.test(pin)){showAuthGate('Enter the 4–8 digit Admin PIN.');return}\n"
+"  btn.disabled=true;$('#authStatusText').textContent='Checking…';\n"
+"  try{\n"
+"    const body=new URLSearchParams({pin}).toString();\n"
+"    const r=await nativeFetch('/api/auth/login',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=utf-8'},body});\n"
+"    const msg=await r.text();\n"
+"    if(!r.ok)throw new Error(msg||'Incorrect PIN');\n"
+"    $('#authPin').value='';await loadAuthStatus();hideAuthGate();await startManagementApp();\n"
+"  }catch(e){showAuthGate(e.message||'Unable to unlock TypeN')}finally{btn.disabled=false}\n"
+"}\n"
+"$('#authPin').addEventListener('keydown',e=>{if(e.key==='Enter')unlockAdmin()});\n"
+"async function saveAdminPin(){\n"
+"  const pin=$('#adminPinInput').value.trim();\n"
+"  if(!/^\\d{4,8}$/.test(pin)){toast('PIN must be 4–8 digits.');return}\n"
+"  try{\n"
+"    const body=new URLSearchParams({pin}).toString();\n"
+"    const r=await fetch('/api/auth/pin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=utf-8'},body});\n"
+"    const msg=await r.text();if(!r.ok)throw new Error(msg||'Unable to save PIN');\n"
+"    $('#adminPinInput').value='';await loadAuthStatus();toast('Admin PIN enabled');\n"
+"  }catch(e){toast(e.message||'Unable to save PIN')}\n"
+"}\n"
+"async function disableAdminPin(){\n"
+"  if(!authState.enabled)return;\n"
+"  try{\n"
+"    const r=await fetch('/api/auth/pin',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=utf-8'},body:'disable=1'});\n"
+"    const msg=await r.text();if(!r.ok)throw new Error(msg||'Unable to disable PIN');\n"
+"    await loadAuthStatus();toast('Admin PIN disabled');\n"
+"  }catch(e){toast(e.message||'Unable to disable PIN')}\n"
+"}\n"
+"function openFactoryReset(){setDialogVisible('#factoryResetConfirm',true)}\n"
+"function closeFactoryReset(){if(!$('#factoryResetButton').disabled)setDialogVisible('#factoryResetConfirm',false)}\n"
+"async function confirmFactoryReset(){\n"
+"  const b=$('#factoryResetButton');b.disabled=true;b.textContent='Resetting…';\n"
+"  try{\n"
+"    const r=await fetch('/api/factory-reset',{method:'POST',cache:'no-store'});\n"
+"    const msg=await r.text();if(!r.ok)throw new Error(msg||'Factory reset failed');\n"
+"    setDialogVisible('#factoryResetConfirm',false);toast('Factory reset complete. TypeN is rebooting.');\n"
+"    setTimeout(()=>location.reload(),3500);\n"
+"  }catch(e){toast(e.message||'Factory reset failed');b.disabled=false;b.textContent='Reset & reboot'}\n"
+"}\n"
+"$('#factoryResetConfirm').addEventListener('click',e=>{if(e.target.id==='factoryResetConfirm')closeFactoryReset()});\n"
+"document.addEventListener('keydown',e=>{\n"
+"  if(e.key!=='Escape')return;\n"
+"  if($('#factoryResetConfirm').classList.contains('show')){closeFactoryReset();return}\n"
+"  if($('#deleteConfirm').classList.contains('show')){closeDeleteConfirm();return}\n"
+"  if($('#updateConfirm').classList.contains('show')){closeUpdateConfirm();return}\n"
+"});\n"
 "\n"
 "function showEasterEggModal(){\n"
 "  $(\'#easterModal\').classList.add(\'show\');\n"
@@ -594,6 +810,74 @@ static const char INDEX_HTML[] =
 "}\n"
 "$(\'#aboutBuildTrigger\').addEventListener(\'click\',handleBuildEasterTap);\n"
 "\n"
+"function renderDiagnostics(){\n"
+"  const d=diagnostics||{};\n"
+"  $('#diagUptime').textContent=duration(d.uptimeMs);\n"
+"  $('#diagReset').textContent=d.resetReason||'—';\n"
+"  $('#diagHeapFree').textContent=size(d.internalHeapFree);\n"
+"  $('#diagHeapMin').textContent=size(d.internalHeapMinimum);\n"
+"  $('#diagPsramFree').textContent=size(d.psramFree);\n"
+"  $('#diagPsramMin').textContent=size(d.psramMinimum);\n"
+"  $('#diagSdState').textContent=d.sdAvailable?'Ready':'Unavailable';\n"
+"  $('#diagSdTotal').textContent=d.sdAvailable?size(d.sdTotal):'—';\n"
+"  $('#diagSdUsed').textContent=d.sdAvailable?size(d.sdUsed):'—';\n"
+"  $('#diagSdFree').textContent=d.sdAvailable?size(d.sdFree):'—';\n"
+"  $('#diagMediaCount').textContent=String(d.mediaCount == null ? '-' : d.mediaCount);\n"
+"  $('#diagSelectedPath').textContent=d.selectedPath||'None';\n"
+"  $('#diagVersion').textContent=d.version||'—';\n"
+"  $('#diagIdentity').textContent=d.variant?(d.variant+(d.firmwareAbi?' / ABI '+d.firmwareAbi:'')):'—';\n"
+"  $('#diagRunningSlot').textContent=d.runningSlot||'—';\n"
+"  $('#diagBootSlot').textContent=d.bootSlot||'—';\n"
+"  $('#diagImageState').textContent=d.imageState||'—';\n"
+"  $('#diagOtaState').textContent=d.otaState||'—';\n"
+"  $('#diagRollback').textContent=d.rollbackPossible?'Available':'Not available';\n"
+"  $('#diagIdf').textContent=d.idfVersion||'—';\n"
+"  $('#diagOtaMessage').textContent=d.otaMessage||'—';\n"
+"  $('#diagIp').textContent=d.ip||'—';\n"
+"  $('#diagPin').textContent=d.adminPinEnabled?'Enabled':'Disabled';\n"
+"  $('#diagTransferState').textContent=d.transferValid?(d.transferSuccess?'Success':'Failed'):'None';\n"
+"  $('#diagTransferRate').textContent=d.transferValid&&d.transferKibPerSecond?d.transferKibPerSecond+' KiB/s':'—';\n"
+"  $('#diagTransferTimeouts').textContent=d.transferValid?String(d.transferTimeouts||0):'—';\n"
+"  $('#diagTransferFile').textContent=d.transferValid&&d.transferFile?d.transferFile:'None';\n"
+"}\n"
+"async function loadDiagnostics(){\n"
+"  try{\n"
+"    const r=await fetch('/api/diagnostics',{cache:'no-store'});if(!r.ok)throw new Error(await r.text());\n"
+"    diagnostics=await r.json();renderDiagnostics();\n"
+"  }catch(e){toast(e.message||'Unable to load diagnostics')}\n"
+"}\n"
+"function diagnosticsReport(){\n"
+"  const d=diagnostics||{};\n"
+"  return [\n"
+"    'TypeN diagnostics',\n"
+"    'Version: '+(d.version||'—'),\n"
+"    'Identity: '+(d.variant||'—')+(d.firmwareAbi?' / ABI '+d.firmwareAbi:''),\n"
+"    'Running slot: '+(d.runningSlot||'—'),\n"
+"    'Boot slot: '+(d.bootSlot||'—'),\n"
+"    'Image state: '+(d.imageState||'—'),\n"
+"    'OTA: '+(d.otaState||'—')+' - '+(d.otaMessage||'—'),\n"
+"    'ESP-IDF: '+(d.idfVersion||'—'),\n"
+"    'Uptime: '+duration(d.uptimeMs),\n"
+"    'Reset reason: '+(d.resetReason||'—'),\n"
+"    'Internal heap: '+size(d.internalHeapFree)+' free / '+size(d.internalHeapMinimum)+' minimum',\n"
+"    'PSRAM: '+size(d.psramFree)+' free / '+size(d.psramMinimum)+' minimum',\n"
+"    'SD: '+(d.sdAvailable?(size(d.sdFree)+' free / '+size(d.sdTotal)+' total'):'unavailable'),\n"
+"    'Media count: '+String(d.mediaCount == null ? '-' : d.mediaCount),\n"
+"    'Active media: '+(d.selectedPath||'None'),\n"
+"    'IP: '+(d.ip||'—'),\n"
+"    'Admin PIN: '+(d.adminPinEnabled?'enabled':'disabled'),\n"
+"    'Last transfer: '+(d.transferValid?((d.transferSuccess?'success':'failed')+' '+(d.transferFile||'')+' '+(d.transferKibPerSecond||0)+' KiB/s, '+(d.transferTimeouts||0)+' timeouts'):'none')\n"
+"  ].join('\\n');\n"
+"}\n"
+"async function copyDiagnostics(){\n"
+"  const report=diagnosticsReport();\n"
+"  try{\n"
+"    if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(report)}\n"
+"    else{const t=document.createElement('textarea');t.value=report;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.select();document.execCommand('copy');t.remove()}\n"
+"    toast('Diagnostics copied');\n"
+"  }catch(e){toast('Unable to copy diagnostics')}\n"
+"}\n"
+"\n"
 "async function loadInfo(){\n"
 "  try{\n"
 "    const r=await fetch('/api/info',{cache:'no-store'}); if(!r.ok)throw 0; info=await r.json();\n"
@@ -605,6 +889,10 @@ static const char INDEX_HTML[] =
 "    const b=Number(info.brightness)||40;\n"
 "    $('#brightnessSlider').value=String(b);\n"
 "    $('#brightnessValue').textContent=b+'%';\n"
+"    $('#statVersion').textContent=info.version||'—';\n"
+"    $('#statSlot').textContent=info.runningSlot||'—';\n"
+"    $('#statIp').textContent=info.ip||'—';\n"
+"    $('#statActive').textContent=info.selectedPath?'YES':'IDLE';\n"
 "    $('#aboutVersion').textContent=info.version||'—';\n"
 "    $('#aboutVariant').textContent=info.firmwareVariant||'—';\n"
 "    $('#aboutAbi').textContent=info.firmwareAbi?String(info.firmwareAbi):'—';\n"
@@ -645,24 +933,24 @@ static const char INDEX_HTML[] =
 "  const list=media.filter(m=>!q||m.name.toLowerCase().includes(q)||m.path.toLowerCase().includes(q));\n"
 "  $('#mediaCount').textContent=media.length+' item'+(media.length===1?'':'s');\n"
 "  $('#statMedia').textContent=media.length;\n"
-"  const selected=media.find(m=>m.selected);\n"
-"  $('#selectedName').textContent=selected?selected.name:'No media selected';\n"
-"  $('#selectedType').textContent=selected?selected.type:'IDLE';\n"
-"  $('#selectedPath').textContent=selected?selected.path:(info.selectedPath||'—');\n"
-"  $('#settingsSelectedPath').textContent=selected?selected.path:(info.selectedPath||'None');\n"
+"  const active=media.find(m=>m.selected);\n"
+"  $('#selectedName').textContent=active?active.name:'No active media';\n"
+"  $('#selectedType').textContent=active?active.type:'IDLE';\n"
+"  $('#selectedPath').textContent=active?active.path:(info.selectedPath||'—');\n"
+"  $('#settingsSelectedPath').textContent=active?active.path:(info.selectedPath||'None');\n"
 "\n"
 "  if(!list.length){$('#mediaGrid').innerHTML='<div class=\"empty\">No matching media.</div>';return}\n"
 "  $('#mediaGrid').innerHTML=list.map(m=>{\n"
 "    const thumb='/api/thumb?path='+encodeURIComponent(m.path);\n"
-"    return `<article class=\"media ${m.selected?'selected':''}\">\n"
+"    return `<article class=\"media ${m.selected?'active':''}\" ${m.selected?'aria-current=\"true\"':''}>\n"
 "      <div class=\"thumb\"><span class=\"fallback\">${esc(m.type)}</span><img decoding=\"async\" data-thumb=\"${esc(thumb)}\" alt=\"\"></div>\n"
 "      <div class=\"media-main\">\n"
 "        <div class=\"media-name\">${esc(m.name)}</div>\n"
 "        <div class=\"media-path\" title=\"${esc(m.path)}\">${esc(m.path)}</div>\n"
-"        <div class=\"media-meta\"><span class=\"badge\">${esc(m.type)}</span><span>${size(m.size)}</span>${m.selected?'<span>● active</span>':''}</div>\n"
+"        <div class=\"media-meta\"><span class=\"badge\">${esc(m.type)}</span><span>${size(m.size)}</span>${m.selected?'<span class=\"active-state\">● ACTIVE</span>':''}</div>\n"
 "      </div>\n"
 "      <div class=\"media-actions\">\n"
-"        <button class=\"btn primary\" onclick='selectMedia(${JSON.stringify(m.path)})'>Show</button>\n"
+"        ${m.selected?'<button class=\"btn active-btn\" disabled>Active</button>':`<button class=\"btn primary\" onclick='selectMedia(${JSON.stringify(m.path)})'>Activate</button>`}\n"
 "        <button class=\"btn danger\" onclick='askDelete(${JSON.stringify(m.path)},${JSON.stringify(m.name)})'>Delete</button>\n"
 "      </div>\n"
 "    </article>`}).join('');\n"
@@ -717,14 +1005,19 @@ static const char INDEX_HTML[] =
 "}\n"
 "\n"
 "$('#file').addEventListener('change',e=>{\n"
-"  const f=e.target.files[0]; $('#fileLabel').textContent=f?`${f.name} · ${size(f.size)}`:'Choose an image or GIF';\n"
+"  const f=e.target.files[0]; $('#fileLabel').textContent=f?`${f.name} · ${size(f.size)}`:'Choose JPEG, PNG, or GIF';\n"
 "});\n"
 "\n"
-"const TYPEN_JPEG_MAX_EDGE=1024;\n"
+"const TYPEN_IMAGE_MAX_EDGE=1024;\n"
 "\n"
 "function isJpegFile(f){\n"
 "  const n=String(f.name||'').toLowerCase();\n"
 "  return f.type==='image/jpeg'||n.endsWith('.jpg')||n.endsWith('.jpeg');\n"
+"}\n"
+"\n"
+"function isPngFile(f){\n"
+"  const n=String(f.name||'').toLowerCase();\n"
+"  return f.type==='image/png'||n.endsWith('.png');\n"
 "}\n"
 "\n"
 "async function loadUploadImage(file){\n"
@@ -735,7 +1028,7 @@ static const char INDEX_HTML[] =
 "  return await new Promise((resolve,reject)=>{\n"
 "    const url=URL.createObjectURL(file),img=new Image();\n"
 "    img.onload=()=>{URL.revokeObjectURL(url);resolve(img)};\n"
-"    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Unable to decode JPEG in browser'))};\n"
+"    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('Unable to decode image in browser'))};\n"
 "    img.src=url;\n"
 "  });\n"
 "}\n"
@@ -744,22 +1037,52 @@ static const char INDEX_HTML[] =
 "  return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('JPEG conversion failed')),'image/jpeg',quality));\n"
 "}\n"
 "\n"
-"async function prepareUpload(file){\n"
-"  if(!isJpegFile(file))return {blob:file,name:file.name,detail:''};\n"
+"function canvasPngBlob(canvas){\n"
+"  return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('PNG conversion failed')),'image/png'));\n"
+"}\n"
+"\n"
+"async function prepareJpegUpload(file){\n"
 "  $('#uploadDetail').textContent='Optimizing JPEG for TypeN hardware decode…';\n"
 "  const image=await loadUploadImage(file);\n"
 "  const sw=Number(image.width||image.naturalWidth)||0,sh=Number(image.height||image.naturalHeight)||0;\n"
 "  if(!sw||!sh)throw new Error('Unable to determine JPEG dimensions');\n"
-"  const scale=Math.min(1,TYPEN_JPEG_MAX_EDGE/Math.max(sw,sh));\n"
+"  const scale=Math.min(1,TYPEN_IMAGE_MAX_EDGE/Math.max(sw,sh));\n"
 "  let dw=Math.max(8,Math.round((sw*scale)/8)*8),dh=Math.max(8,Math.round((sh*scale)/8)*8);\n"
-"  dw=Math.max(8,Math.min(TYPEN_JPEG_MAX_EDGE,Math.floor(dw/8)*8));\n"
-"  dh=Math.max(8,Math.min(TYPEN_JPEG_MAX_EDGE,Math.floor(dh/8)*8));\n"
+"  dw=Math.max(8,Math.min(TYPEN_IMAGE_MAX_EDGE,Math.floor(dw/8)*8));\n"
+"  dh=Math.max(8,Math.min(TYPEN_IMAGE_MAX_EDGE,Math.floor(dh/8)*8));\n"
 "  const canvas=document.createElement('canvas');canvas.width=dw;canvas.height=dh;\n"
 "  const ctx=canvas.getContext('2d',{alpha:false});if(!ctx)throw new Error('Canvas unavailable');\n"
+"  ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';\n"
 "  ctx.fillStyle='#000';ctx.fillRect(0,0,dw,dh);ctx.drawImage(image,0,0,dw,dh);\n"
 "  if(image.close)try{image.close()}catch(e){}\n"
 "  const blob=await canvasJpegBlob(canvas,.90);\n"
 "  return {blob:blob,name:file.name,detail:`JPEG optimized ${sw}×${sh} → ${dw}×${dh} · ${size(file.size)} → ${size(blob.size)}`};\n"
+"}\n"
+"\n"
+"async function preparePngUpload(file){\n"
+"  $('#uploadDetail').textContent='Checking PNG dimensions…';\n"
+"  const image=await loadUploadImage(file);\n"
+"  const sw=Number(image.width||image.naturalWidth)||0,sh=Number(image.height||image.naturalHeight)||0;\n"
+"  if(!sw||!sh){if(image.close)try{image.close()}catch(e){};throw new Error('Unable to determine PNG dimensions')}\n"
+"  if(Math.max(sw,sh)<=TYPEN_IMAGE_MAX_EDGE){\n"
+"    if(image.close)try{image.close()}catch(e){}\n"
+"    return {blob:file,name:file.name,detail:`PNG ${sw}×${sh} already within TypeN ${TYPEN_IMAGE_MAX_EDGE}px limit · ${size(file.size)}`};\n"
+"  }\n"
+"  let dw,dh;\n"
+"  if(sw>=sh){dw=TYPEN_IMAGE_MAX_EDGE;dh=Math.max(1,Math.round(sh*TYPEN_IMAGE_MAX_EDGE/sw))}\n"
+"  else{dh=TYPEN_IMAGE_MAX_EDGE;dw=Math.max(1,Math.round(sw*TYPEN_IMAGE_MAX_EDGE/sh))}\n"
+"  const canvas=document.createElement('canvas');canvas.width=dw;canvas.height=dh;\n"
+"  const ctx=canvas.getContext('2d',{alpha:true});if(!ctx)throw new Error('Canvas unavailable');\n"
+"  ctx.clearRect(0,0,dw,dh);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(image,0,0,dw,dh);\n"
+"  if(image.close)try{image.close()}catch(e){}\n"
+"  const blob=await canvasPngBlob(canvas);\n"
+"  return {blob:blob,name:file.name,detail:`PNG resized ${sw}×${sh} → ${dw}×${dh} · transparency preserved · ${size(file.size)} → ${size(blob.size)}`};\n"
+"}\n"
+"\n"
+"async function prepareUpload(file){\n"
+"  if(isJpegFile(file))return await prepareJpegUpload(file);\n"
+"  if(isPngFile(file))return await preparePngUpload(file);\n"
+"  return {blob:file,name:file.name,detail:''};\n"
 "}\n"
 "\n"
 "async function upload(){\n"
@@ -771,7 +1094,7 @@ static const char INDEX_HTML[] =
 "    const x=new XMLHttpRequest();\n"
 "    x.open('POST','/api/upload?name='+encodeURIComponent(prepared.name));\n"
 "    x.upload.onprogress=e=>{if(e.lengthComputable)bar.style.width=((e.loaded/e.total)*100).toFixed(1)+'%'};\n"
-"    x.onload=async()=>{btn.disabled=false;if(x.status>=200&&x.status<300){bar.style.width='100%';toast('Upload complete');$('#file').value='';$('#fileLabel').textContent='Choose an image or GIF';await refreshMedia()}else toast(x.responseText||'Upload failed')};\n"
+"    x.onload=async()=>{btn.disabled=false;if(x.status>=200&&x.status<300){bar.style.width='100%';toast('Upload complete');$('#file').value='';$('#fileLabel').textContent='Choose JPEG, PNG, or GIF';await refreshMedia()}else toast(x.responseText||'Upload failed')};\n"
 "    x.onerror=()=>{btn.disabled=false;toast('Upload failed')};\n"
 "    x.send(prepared.blob);\n"
 "  }catch(e){btn.disabled=false;$('#uploadDetail').textContent='';toast(e.message||'Unable to prepare upload')}\n"
@@ -780,7 +1103,10 @@ static const char INDEX_HTML[] =
 "async function selectMedia(path){\n"
 "  try{\n"
 "    const r=await fetch('/api/select',{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:path});\n"
-"    const t=await r.text(); if(!r.ok)throw new Error(t); toast('Now displaying selected media'); await refreshMedia();\n"
+"    const t=await r.text();if(!r.ok)throw new Error(t);\n"
+"    media.forEach(m=>{m.selected=(m.path===path)});info.selectedPath=path;render();\n"
+"    toast('Active media updated');\n"
+"    await refreshMedia();\n"
 "  }catch(e){toast(e.message||'Selection failed')}\n"
 "}\n"
 "\n"
@@ -790,12 +1116,12 @@ static const char INDEX_HTML[] =
 "  pendingDelete={path:path,name:name};\n"
 "  $('#deleteConfirmName').textContent=name+'\\n'+path;\n"
 "  $('#deleteConfirmButton').disabled=false;\n"
-"  $('#deleteConfirm').classList.add('show');\n"
+"  setDialogVisible('#deleteConfirm',true);\n"
 "}\n"
 "\n"
 "function closeDeleteConfirm(){\n"
 "  if($('#deleteConfirmButton').disabled)return;\n"
-"  pendingDelete=null;$('#deleteConfirm').classList.remove('show');\n"
+"  pendingDelete=null;setDialogVisible('#deleteConfirm',false);\n"
 "}\n"
 "\n"
 "async function confirmDelete(){\n"
@@ -805,7 +1131,7 @@ static const char INDEX_HTML[] =
 "  try{\n"
 "    const r=await fetch('/api/delete?path='+encodeURIComponent(item.path),{method:'POST',cache:'no-store'});\n"
 "    const t=await r.text();if(!r.ok)throw new Error(t||'Delete failed');\n"
-"    pendingDelete=null;$('#deleteConfirm').classList.remove('show');toast('Deleted '+item.name);await refreshMedia();\n"
+"    pendingDelete=null;setDialogVisible('#deleteConfirm',false);toast('Deleted '+item.name);await refreshMedia();\n"
 "  }catch(e){toast(e.message||'Delete failed')}\n"
 "  finally{button.disabled=false;button.textContent='Delete'}\n"
 "}\n"
@@ -839,13 +1165,13 @@ static const char INDEX_HTML[] =
 "  $('#updateConfirmDetails').textContent=details;\n"
 "  $('#updateConfirmButton').disabled=false;\n"
 "  $('#updateConfirmButton').textContent='Install update';\n"
-"  $('#updateConfirm').classList.add('show');\n"
+"  setDialogVisible('#updateConfirm',true);\n"
 "}\n"
 "\n"
 "function closeUpdateConfirm(){\n"
 "  if($('#updateConfirmButton').disabled)return;\n"
 "  pendingUpdateAction=null;\n"
-"  $('#updateConfirm').classList.remove('show');\n"
+"  setDialogVisible('#updateConfirm',false);\n"
 "}\n"
 "\n"
 "$('#updateConfirm').addEventListener('click',e=>{if(e.target.id==='updateConfirm')closeUpdateConfirm()});\n"
@@ -1047,9 +1373,19 @@ static const char INDEX_HTML[] =
 "}\n"
 "\n"
 "\n"
-"(async()=>{\n"
-"  const initial=location.hash.slice(1); if(['media','settings','update','about'].includes(initial))setView(initial);\n"
+"let managementStarted=false;\n"
+"async function startManagementApp(){\n"
+"  if(managementStarted)return;managementStarted=true;\n"
 "  await loadInfo(); await refreshMedia(); await refreshUpdateStatus(true);\n"
+"  if($('#view-diagnostics').classList.contains('active'))await loadDiagnostics();\n"
+"}\n"
+"(async()=>{\n"
+"  const initial=location.hash.slice(1);if(['media','settings','update','diagnostics','about'].includes(initial))setView(initial);\n"
+"  const a=await loadAuthStatus();\n"
+"  if(a.enabled&&!a.authenticated){\n"
+"    const wait=a.lockoutSeconds>0?`Try again in ${a.lockoutSeconds}s.`:'';showAuthGate(wait);return;\n"
+"  }\n"
+"  hideAuthGate();await startManagementApp();\n"
 "})();\n"
 "</script>\n"
 "</body>\n"
@@ -2263,6 +2599,587 @@ static bool form_value(
     return true;
 }
 
+
+static bool admin_token_equal(
+    const char *a,
+    const char *b)
+{
+    if (a == NULL ||
+        b == NULL) {
+        return false;
+    }
+
+    const size_t a_len =
+        strlen(a);
+
+    const size_t b_len =
+        strlen(b);
+
+    if (a_len != b_len ||
+        a_len == 0) {
+        return false;
+    }
+
+    unsigned char diff = 0;
+
+    for (size_t i = 0;
+         i < a_len;
+         ++i) {
+        diff |=
+            (unsigned char)(
+                a[i] ^ b[i]
+            );
+    }
+
+    return diff == 0;
+}
+
+static bool admin_cookie_token(
+    httpd_req_t *req,
+    char *token,
+    size_t token_capacity)
+{
+    if (req == NULL ||
+        token == NULL ||
+        token_capacity < ADMIN_SESSION_TOKEN_HEX) {
+        return false;
+    }
+
+    token[0] = '\0';
+
+    const size_t cookie_len =
+        httpd_req_get_hdr_value_len(
+            req,
+            "Cookie"
+        );
+
+    if (cookie_len == 0 ||
+        cookie_len > 511) {
+        return false;
+    }
+
+    char cookie[512];
+
+    if (httpd_req_get_hdr_value_str(
+            req,
+            "Cookie",
+            cookie,
+            sizeof(cookie)) != ESP_OK) {
+        return false;
+    }
+
+    const char *key =
+        "typen_session=";
+
+    const char *p =
+        strstr(
+            cookie,
+            key
+        );
+
+    if (p == NULL) {
+        return false;
+    }
+
+    p += strlen(key);
+
+    size_t len = 0;
+
+    while (p[len] != '\0' &&
+           p[len] != ';' &&
+           len + 1U < token_capacity) {
+        ++len;
+    }
+
+    if (len != ADMIN_SESSION_TOKEN_HEX - 1U) {
+        return false;
+    }
+
+    memcpy(
+        token,
+        p,
+        len
+    );
+
+    token[len] = '\0';
+    return true;
+}
+
+static bool admin_session_valid(
+    httpd_req_t *req,
+    bool refresh)
+{
+    if (!typen_settings_admin_pin_enabled()) {
+        return true;
+    }
+
+    if (s_admin_session[0] == '\0') {
+        return false;
+    }
+
+    const int64_t now =
+        esp_timer_get_time();
+
+    if (s_admin_session_last_us <= 0 ||
+        now - s_admin_session_last_us >
+            ADMIN_SESSION_IDLE_US) {
+        s_admin_session[0] = '\0';
+        s_admin_session_last_us = 0;
+        return false;
+    }
+
+    char token[ADMIN_SESSION_TOKEN_HEX];
+
+    if (!admin_cookie_token(
+            req,
+            token,
+            sizeof(token))) {
+        return false;
+    }
+
+    if (!admin_token_equal(
+            token,
+            s_admin_session)) {
+        return false;
+    }
+
+    if (refresh) {
+        s_admin_session_last_us =
+            now;
+    }
+
+    return true;
+}
+
+static void admin_issue_session(
+    httpd_req_t *req)
+{
+    uint8_t raw[ADMIN_SESSION_TOKEN_BYTES];
+
+    esp_fill_random(
+        raw,
+        sizeof(raw)
+    );
+
+    static const char hex[] =
+        "0123456789abcdef";
+
+    for (size_t i = 0;
+         i < sizeof(raw);
+         ++i) {
+        s_admin_session[i * 2U] =
+            hex[(raw[i] >> 4) & 0x0FU];
+
+        s_admin_session[i * 2U + 1U] =
+            hex[raw[i] & 0x0FU];
+    }
+
+    s_admin_session[
+        ADMIN_SESSION_TOKEN_HEX - 1U
+    ] = '\0';
+
+    s_admin_session_last_us =
+        esp_timer_get_time();
+
+    char cookie[128];
+
+    snprintf(
+        cookie,
+        sizeof(cookie),
+        "typen_session=%s; Path=/; HttpOnly; SameSite=Strict",
+        s_admin_session
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Set-Cookie",
+        cookie
+    );
+}
+
+static esp_err_t admin_unauthorized(
+    httpd_req_t *req,
+    const char *message)
+{
+    httpd_resp_set_status(
+        req,
+        "401 Unauthorized"
+    );
+
+    httpd_resp_set_type(
+        req,
+        "text/plain"
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Cache-Control",
+        "no-store"
+    );
+
+    return httpd_resp_sendstr(
+        req,
+        message
+            ? message
+            : "Admin PIN required"
+    );
+}
+
+
+static esp_err_t auth_status_get(
+    httpd_req_t *req)
+{
+    const bool enabled =
+        typen_settings_admin_pin_enabled();
+
+    const bool authenticated =
+        !enabled ||
+        admin_session_valid(
+            req,
+            true
+        );
+
+    const int64_t now =
+        esp_timer_get_time();
+
+    unsigned lockout_seconds = 0;
+
+    if (s_admin_lockout_until_us > now) {
+        lockout_seconds =
+            (unsigned)(
+                (s_admin_lockout_until_us -
+                 now +
+                 INT64_C(999999)) /
+                INT64_C(1000000)
+            );
+    }
+
+    char body[128];
+
+    snprintf(
+        body,
+        sizeof(body),
+        "{\"enabled\":%s,\"authenticated\":%s,\"lockoutSeconds\":%u}",
+        enabled
+            ? "true"
+            : "false",
+        authenticated
+            ? "true"
+            : "false",
+        lockout_seconds
+    );
+
+    httpd_resp_set_type(
+        req,
+        "application/json"
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Cache-Control",
+        "no-store"
+    );
+
+    return httpd_resp_sendstr(
+        req,
+        body
+    );
+}
+
+static esp_err_t auth_login_post(
+    httpd_req_t *req)
+{
+    if (!typen_settings_admin_pin_enabled()) {
+        admin_issue_session(req);
+
+        return httpd_resp_sendstr(
+            req,
+            "Admin PIN is not enabled"
+        );
+    }
+
+    const int64_t now =
+        esp_timer_get_time();
+
+    if (s_admin_lockout_until_us > now) {
+        const unsigned seconds =
+            (unsigned)(
+                (s_admin_lockout_until_us -
+                 now +
+                 INT64_C(999999)) /
+                INT64_C(1000000)
+            );
+
+        char retry[16];
+
+        snprintf(
+            retry,
+            sizeof(retry),
+            "%u",
+            seconds
+        );
+
+        httpd_resp_set_status(
+            req,
+            "429 Too Many Requests"
+        );
+
+        httpd_resp_set_hdr(
+            req,
+            "Retry-After",
+            retry
+        );
+
+        return httpd_resp_sendstr(
+            req,
+            "Too many attempts; try again shortly"
+        );
+    }
+
+    char body[128];
+
+    esp_err_t err =
+        read_request_body(
+            req,
+            body,
+            sizeof(body)
+        );
+
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "Invalid login body"
+        );
+    }
+
+    char pin[
+        TYPEN_ADMIN_PIN_MAX_DIGITS + 1U
+    ];
+
+    if (!form_value(
+            body,
+            "pin",
+            pin,
+            sizeof(pin))) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "PIN required"
+        );
+    }
+
+    bool matches = false;
+
+    err =
+        typen_settings_verify_admin_pin(
+            pin,
+            &matches
+        );
+
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to verify Admin PIN"
+        );
+    }
+
+    if (!matches) {
+        ++s_admin_failures;
+
+        if (s_admin_failures >=
+            ADMIN_FAIL_LIMIT) {
+            s_admin_failures = 0;
+
+            s_admin_lockout_until_us =
+                now +
+                ADMIN_LOCKOUT_US;
+        }
+
+        return admin_unauthorized(
+            req,
+            "Incorrect Admin PIN"
+        );
+    }
+
+    s_admin_failures = 0;
+    s_admin_lockout_until_us = 0;
+
+    admin_issue_session(req);
+
+    return httpd_resp_sendstr(
+        req,
+        "Unlocked"
+    );
+}
+
+static esp_err_t auth_pin_post(
+    httpd_req_t *req)
+{
+    const bool enabled =
+        typen_settings_admin_pin_enabled();
+
+    if (enabled &&
+        !admin_session_valid(
+            req,
+            true)) {
+        return admin_unauthorized(
+            req,
+            "Admin PIN required"
+        );
+    }
+
+    char body[128];
+
+    esp_err_t err =
+        read_request_body(
+            req,
+            body,
+            sizeof(body)
+        );
+
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "Invalid Admin PIN body"
+        );
+    }
+
+    char disable[8];
+
+    if (form_value(
+            body,
+            "disable",
+            disable,
+            sizeof(disable)) &&
+        strcmp(disable, "1") == 0) {
+        err =
+            typen_settings_clear_admin_pin();
+
+        if (err != ESP_OK) {
+            return httpd_resp_send_err(
+                req,
+                HTTPD_500_INTERNAL_SERVER_ERROR,
+                "Unable to disable Admin PIN"
+            );
+        }
+
+        s_admin_session[0] = '\0';
+        s_admin_session_last_us = 0;
+        s_admin_failures = 0;
+        s_admin_lockout_until_us = 0;
+
+        return httpd_resp_sendstr(
+            req,
+            "Admin PIN disabled"
+        );
+    }
+
+    char pin[
+        TYPEN_ADMIN_PIN_MAX_DIGITS + 1U
+    ];
+
+    if (!form_value(
+            body,
+            "pin",
+            pin,
+            sizeof(pin))) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "New PIN required"
+        );
+    }
+
+    err =
+        typen_settings_set_admin_pin(
+            pin
+        );
+
+    if (err == ESP_ERR_INVALID_ARG) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_400_BAD_REQUEST,
+            "PIN must be 4-8 digits"
+        );
+    }
+
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Unable to save Admin PIN"
+        );
+    }
+
+    /*
+     * The browser which enabled/changed the PIN remains authenticated.
+     */
+    admin_issue_session(req);
+
+    return httpd_resp_sendstr(
+        req,
+        "Admin PIN saved"
+    );
+}
+
+static void factory_reset_reboot_task(
+    void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(
+        pdMS_TO_TICKS(500)
+    );
+
+    esp_restart();
+}
+
+static esp_err_t factory_reset_post(
+    httpd_req_t *req)
+{
+    esp_err_t err =
+        typen_settings_factory_reset();
+
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Factory reset failed"
+        );
+    }
+
+    s_admin_session[0] = '\0';
+    s_admin_session_last_us = 0;
+    s_admin_failures = 0;
+    s_admin_lockout_until_us = 0;
+
+    BaseType_t ok =
+        xTaskCreate(
+            factory_reset_reboot_task,
+            "typen_reset",
+            2048,
+            NULL,
+            4,
+            NULL
+        );
+
+    if (ok != pdPASS) {
+        return httpd_resp_send_err(
+            req,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "Settings cleared but reboot task failed"
+        );
+    }
+
+    return httpd_resp_sendstr(
+        req,
+        "Factory reset complete; rebooting"
+    );
+}
+
 static esp_err_t root_get(
     httpd_req_t *req)
 {
@@ -2389,6 +3306,337 @@ static void send_json_string(
         1
     );
 }
+
+
+static const char *reset_reason_name(
+    esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:
+            return "Power on";
+        case ESP_RST_EXT:
+            return "External reset";
+        case ESP_RST_SW:
+            return "Software reset";
+        case ESP_RST_PANIC:
+            return "Panic";
+        case ESP_RST_INT_WDT:
+            return "Interrupt watchdog";
+        case ESP_RST_TASK_WDT:
+            return "Task watchdog";
+        case ESP_RST_WDT:
+            return "Watchdog";
+        case ESP_RST_DEEPSLEEP:
+            return "Deep sleep";
+        case ESP_RST_BROWNOUT:
+            return "Brownout";
+        case ESP_RST_SDIO:
+            return "SDIO reset";
+        case ESP_RST_UNKNOWN:
+        default:
+            return "Unknown";
+    }
+}
+
+static esp_err_t diagnostics_get(
+    httpd_req_t *req)
+{
+    char selected[TYPEN_SETTINGS_PATH_MAX] = {0};
+
+    if (typen_settings_get_selected_media(
+            selected,
+            sizeof(selected)) != ESP_OK) {
+        selected[0] = '\0';
+    }
+
+    uint64_t sd_total = 0;
+    uint64_t sd_free = 0;
+
+    const bool sd_available =
+        esp_vfs_fat_info(
+            TYPEN_SD_ROOT,
+            &sd_total,
+            &sd_free
+        ) == ESP_OK;
+
+    const uint64_t sd_used =
+        sd_total >= sd_free
+            ? sd_total - sd_free
+            : 0;
+
+    const size_t internal_heap_free =
+        heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL |
+            MALLOC_CAP_8BIT
+        );
+
+    const size_t internal_heap_minimum =
+        heap_caps_get_minimum_free_size(
+            MALLOC_CAP_INTERNAL |
+            MALLOC_CAP_8BIT
+        );
+
+    const size_t psram_free =
+        heap_caps_get_free_size(
+            MALLOC_CAP_SPIRAM |
+            MALLOC_CAP_8BIT
+        );
+
+    const size_t psram_minimum =
+        heap_caps_get_minimum_free_size(
+            MALLOC_CAP_SPIRAM |
+            MALLOC_CAP_8BIT
+        );
+
+    typen_update_status_t update_status;
+    memset(
+        &update_status,
+        0,
+        sizeof(update_status)
+    );
+
+    typen_update_get_status(
+        &update_status
+    );
+
+    const esp_app_desc_t *app_desc =
+        esp_app_get_description();
+
+    const char *version =
+        update_status.running_version[0]
+            ? update_status.running_version
+            : (app_desc ? app_desc->version : "");
+
+    const char *variant =
+        update_status.running_variant[0]
+            ? update_status.running_variant
+            : "";
+
+    const uint64_t uptime_ms =
+        (uint64_t)(
+            esp_timer_get_time() /
+            1000
+        );
+
+    httpd_resp_set_type(
+        req,
+        "application/json"
+    );
+
+    httpd_resp_set_hdr(
+        req,
+        "Cache-Control",
+        "no-store"
+    );
+
+    char head[512];
+
+    snprintf(
+        head,
+        sizeof(head),
+        "{\"uptimeMs\":%llu,"
+        "\"internalHeapFree\":%u,"
+        "\"internalHeapMinimum\":%u,"
+        "\"psramFree\":%u,"
+        "\"psramMinimum\":%u,"
+        "\"sdAvailable\":%s,"
+        "\"sdTotal\":%llu,"
+        "\"sdFree\":%llu,"
+        "\"sdUsed\":%llu,"
+        "\"mediaCount\":%u,"
+        "\"firmwareAbi\":%u,"
+        "\"rollbackPossible\":%s,"
+        "\"adminPinEnabled\":%s,"
+        "\"transferValid\":%s,"
+        "\"transferSuccess\":%s,"
+        "\"transferBytes\":%u,"
+        "\"transferMs\":%u,"
+        "\"transferKibPerSecond\":%u,"
+        "\"transferTimeouts\":%u",
+        (unsigned long long)uptime_ms,
+        (unsigned)internal_heap_free,
+        (unsigned)internal_heap_minimum,
+        (unsigned)psram_free,
+        (unsigned)psram_minimum,
+        sd_available ? "true" : "false",
+        (unsigned long long)sd_total,
+        (unsigned long long)sd_free,
+        (unsigned long long)sd_used,
+        (unsigned)typen_media_count(),
+        (unsigned)update_status.running_firmware_abi,
+        update_status.rollback_possible
+            ? "true"
+            : "false",
+        typen_settings_admin_pin_enabled()
+            ? "true"
+            : "false",
+        s_last_transfer.valid
+            ? "true"
+            : "false",
+        s_last_transfer.success
+            ? "true"
+            : "false",
+        (unsigned)s_last_transfer.bytes_received,
+        (unsigned)s_last_transfer.elapsed_ms,
+        (unsigned)s_last_transfer.kib_per_second,
+        s_last_transfer.recv_timeouts
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        head,
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"resetReason\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        reset_reason_name(
+            esp_reset_reason()
+        )
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"selectedPath\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        selected
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"ip\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        typen_wifi_ip_string()
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"version\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        version
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"variant\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        variant
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"runningSlot\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        update_status.running_partition
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"bootSlot\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        update_status.boot_partition
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"imageState\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        update_status.image_state
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"otaState\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        typen_update_state_name(
+            update_status.state
+        )
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"otaMessage\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        update_status.message
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"idfVersion\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        esp_get_idf_version()
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        ",\"transferFile\":",
+        HTTPD_RESP_USE_STRLEN
+    );
+
+    send_json_string(
+        req,
+        s_last_transfer.filename
+    );
+
+    httpd_resp_send_chunk(
+        req,
+        "}",
+        1
+    );
+
+    return httpd_resp_send_chunk(
+        req,
+        NULL,
+        0
+    );
+}
+
 
 static esp_err_t send_settings_json(
     httpd_req_t *req)
@@ -4759,13 +6007,13 @@ static esp_err_t select_post(
 
     ESP_LOGI(
         TAG,
-        "Selected %s",
+        "Activated %s",
         item.path
     );
 
     return httpd_resp_sendstr(
         req,
-        "Selected"
+        "Activated"
     );
 }
 
@@ -4961,6 +6209,41 @@ static esp_err_t delete_post(
     );
 }
 
+
+#define DEFINE_ADMIN_WRAPPER(name) \
+    static esp_err_t name##_admin( \
+        httpd_req_t *req) \
+    { \
+        if (!admin_session_valid( \
+                req, \
+                true)) { \
+            return admin_unauthorized( \
+                req, \
+                "Admin PIN required" \
+            ); \
+        } \
+        return name(req); \
+    }
+
+DEFINE_ADMIN_WRAPPER(info_get)
+DEFINE_ADMIN_WRAPPER(diagnostics_get)
+DEFINE_ADMIN_WRAPPER(easter_egg_start_post)
+DEFINE_ADMIN_WRAPPER(easter_egg_exit_post)
+DEFINE_ADMIN_WRAPPER(settings_get)
+DEFINE_ADMIN_WRAPPER(settings_post)
+DEFINE_ADMIN_WRAPPER(update_status_get)
+DEFINE_ADMIN_WRAPPER(update_upload_check_post)
+DEFINE_ADMIN_WRAPPER(update_upload_post)
+DEFINE_ADMIN_WRAPPER(update_sd_check_get)
+DEFINE_ADMIN_WRAPPER(update_sd_post)
+DEFINE_ADMIN_WRAPPER(transfer_status_get)
+DEFINE_ADMIN_WRAPPER(media_get)
+DEFINE_ADMIN_WRAPPER(thumb_get)
+DEFINE_ADMIN_WRAPPER(upload_post)
+DEFINE_ADMIN_WRAPPER(select_post)
+DEFINE_ADMIN_WRAPPER(delete_post)
+DEFINE_ADMIN_WRAPPER(factory_reset_post)
+
 esp_err_t typen_web_start(
     typen_web_select_cb_t select_cb,
     void *ctx)
@@ -4975,7 +6258,7 @@ esp_err_t typen_web_start(
     httpd_config_t config =
         HTTPD_DEFAULT_CONFIG();
 
-    config.max_uri_handlers = 18;
+    config.max_uri_handlers = 24;
     config.stack_size = 10240;
 
     /*
@@ -5014,84 +6297,109 @@ esp_err_t typen_web_start(
             .handler = root_get
         },
         {
+            .uri = "/api/auth/status",
+            .method = HTTP_GET,
+            .handler = auth_status_get
+        },
+        {
+            .uri = "/api/auth/login",
+            .method = HTTP_POST,
+            .handler = auth_login_post
+        },
+        {
+            .uri = "/api/auth/pin",
+            .method = HTTP_POST,
+            .handler = auth_pin_post
+        },
+        {
+            .uri = "/api/factory-reset",
+            .method = HTTP_POST,
+            .handler = factory_reset_post_admin
+        },
+        {
             .uri = "/api/info",
             .method = HTTP_GET,
-            .handler = info_get
+            .handler = info_get_admin
+        },
+        {
+            .uri = "/api/diagnostics",
+            .method = HTTP_GET,
+            .handler = diagnostics_get_admin
         },
         {
             .uri = "/api/easter-egg/start",
             .method = HTTP_POST,
-            .handler = easter_egg_start_post
+            .handler = easter_egg_start_post_admin
         },
         {
             .uri = "/api/easter-egg/exit",
             .method = HTTP_POST,
-            .handler = easter_egg_exit_post
+            .handler = easter_egg_exit_post_admin
         },
         {
             .uri = "/api/settings",
             .method = HTTP_GET,
-            .handler = settings_get
+            .handler = settings_get_admin
         },
         {
             .uri = "/api/settings",
             .method = HTTP_POST,
-            .handler = settings_post
+            .handler = settings_post_admin
         },
         {
             .uri = "/api/update/status",
             .method = HTTP_GET,
-            .handler = update_status_get
+            .handler = update_status_get_admin
         },
         {
             .uri = "/api/update/upload/check",
             .method = HTTP_POST,
-            .handler = update_upload_check_post
+            .handler = update_upload_check_post_admin
         },
         {
             .uri = "/api/update/upload",
             .method = HTTP_POST,
-            .handler = update_upload_post
+            .handler = update_upload_post_admin
         },
         {
             .uri = "/api/update/sd/check",
             .method = HTTP_GET,
-            .handler = update_sd_check_get
+            .handler = update_sd_check_get_admin
         },
         {
             .uri = "/api/update/sd",
             .method = HTTP_POST,
-            .handler = update_sd_post
+            .handler = update_sd_post_admin
         },
         {
             .uri = "/api/transfer/status",
             .method = HTTP_GET,
-            .handler = transfer_status_get
+            .handler = transfer_status_get_admin
         },
         {
             .uri = "/api/media",
             .method = HTTP_GET,
-            .handler = media_get
+            .handler = media_get_admin
         },
         {
             .uri = "/api/thumb",
             .method = HTTP_GET,
-            .handler = thumb_get
+            .handler = thumb_get_admin
         },
         {
             .uri = "/api/upload",
             .method = HTTP_POST,
-            .handler = upload_post
+            .handler = upload_post_admin
         },
         {
             .uri = "/api/select",
             .method = HTTP_POST,
-            .handler = select_post
+            .handler = select_post_admin
         },
         {
             .uri = "/api/delete",
             .method = HTTP_POST,
-            .handler = delete_post
+            .handler = delete_post_admin
         },
     };
 

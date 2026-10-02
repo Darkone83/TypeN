@@ -5,8 +5,10 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "mbedtls/sha256.h"
 
 #include "typen_settings.h"
 
@@ -15,6 +17,11 @@
 #define TYPEN_NVS_UPLOAD_PATH  "upload_path"
 #define TYPEN_NVS_THUMB_PATH   "thumb_path"
 #define TYPEN_NVS_BRIGHTNESS   "brightness"
+#define TYPEN_NVS_ADMIN_SALT   "admin_salt"
+#define TYPEN_NVS_ADMIN_HASH   "admin_hash"
+
+#define TYPEN_ADMIN_SALT_BYTES 16
+#define TYPEN_ADMIN_HASH_BYTES 32
 
 static const char *TAG = "typen_settings";
 
@@ -181,6 +188,118 @@ static esp_err_t get_string_default(
     }
 
     return err;
+}
+
+
+static bool valid_admin_pin(
+    const char *pin)
+{
+    if (pin == NULL) {
+        return false;
+    }
+
+    const size_t len =
+        strlen(pin);
+
+    if (len < TYPEN_ADMIN_PIN_MIN_DIGITS ||
+        len > TYPEN_ADMIN_PIN_MAX_DIGITS) {
+        return false;
+    }
+
+    for (size_t i = 0; i < len; ++i) {
+        if (pin[i] < '0' ||
+            pin[i] > '9') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static esp_err_t hash_admin_pin(
+    const uint8_t salt[TYPEN_ADMIN_SALT_BYTES],
+    const char *pin,
+    uint8_t hash[TYPEN_ADMIN_HASH_BYTES])
+{
+    if (salt == NULL ||
+        pin == NULL ||
+        hash == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    mbedtls_sha256_context ctx;
+    mbedtls_sha256_init(&ctx);
+
+    int rc =
+        mbedtls_sha256_starts(
+            &ctx,
+            0
+        );
+
+    if (rc == 0) {
+        rc =
+            mbedtls_sha256_update(
+                &ctx,
+                salt,
+                TYPEN_ADMIN_SALT_BYTES
+            );
+    }
+
+    if (rc == 0) {
+        static const unsigned char domain[] =
+            "TypeN admin PIN v1";
+
+        rc =
+            mbedtls_sha256_update(
+                &ctx,
+                domain,
+                sizeof(domain) - 1U
+            );
+    }
+
+    if (rc == 0) {
+        rc =
+            mbedtls_sha256_update(
+                &ctx,
+                (const unsigned char *)pin,
+                strlen(pin)
+            );
+    }
+
+    if (rc == 0) {
+        rc =
+            mbedtls_sha256_finish(
+                &ctx,
+                hash
+            );
+    }
+
+    mbedtls_sha256_free(&ctx);
+
+    return
+        rc == 0
+            ? ESP_OK
+            : ESP_FAIL;
+}
+
+static bool constant_time_equal(
+    const uint8_t *a,
+    const uint8_t *b,
+    size_t len)
+{
+    if (a == NULL ||
+        b == NULL) {
+        return false;
+    }
+
+    uint8_t diff = 0;
+
+    for (size_t i = 0; i < len; ++i) {
+        diff |=
+            (uint8_t)(a[i] ^ b[i]);
+    }
+
+    return diff == 0;
 }
 
 esp_err_t typen_settings_init(void)
@@ -426,3 +545,294 @@ esp_err_t typen_settings_get_brightness(
 
     return ESP_OK;
 }
+
+bool typen_settings_admin_pin_enabled(void)
+{
+    nvs_handle_t handle = 0;
+
+    esp_err_t err =
+        open_namespace(
+            NVS_READONLY,
+            &handle
+        );
+
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    size_t salt_len = 0;
+    size_t hash_len = 0;
+
+    const esp_err_t salt_err =
+        nvs_get_blob(
+            handle,
+            TYPEN_NVS_ADMIN_SALT,
+            NULL,
+            &salt_len
+        );
+
+    const esp_err_t hash_err =
+        nvs_get_blob(
+            handle,
+            TYPEN_NVS_ADMIN_HASH,
+            NULL,
+            &hash_len
+        );
+
+    nvs_close(handle);
+
+    return
+        salt_err == ESP_OK &&
+        hash_err == ESP_OK &&
+        salt_len == TYPEN_ADMIN_SALT_BYTES &&
+        hash_len == TYPEN_ADMIN_HASH_BYTES;
+}
+
+esp_err_t typen_settings_set_admin_pin(
+    const char *pin)
+{
+    if (!valid_admin_pin(pin)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint8_t salt[TYPEN_ADMIN_SALT_BYTES];
+    uint8_t hash[TYPEN_ADMIN_HASH_BYTES];
+
+    esp_fill_random(
+        salt,
+        sizeof(salt)
+    );
+
+    esp_err_t err =
+        hash_admin_pin(
+            salt,
+            pin,
+            hash
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    nvs_handle_t handle = 0;
+
+    err =
+        open_namespace(
+            NVS_READWRITE,
+            &handle
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        nvs_set_blob(
+            handle,
+            TYPEN_NVS_ADMIN_SALT,
+            salt,
+            sizeof(salt)
+        );
+
+    if (err == ESP_OK) {
+        err =
+            nvs_set_blob(
+                handle,
+                TYPEN_NVS_ADMIN_HASH,
+                hash,
+                sizeof(hash)
+            );
+    }
+
+    if (err == ESP_OK) {
+        err =
+            nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "Admin PIN protection enabled"
+        );
+    }
+
+    return err;
+}
+
+esp_err_t typen_settings_verify_admin_pin(
+    const char *pin,
+    bool *matches)
+{
+    if (matches == NULL ||
+        pin == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    *matches = false;
+
+    if (!valid_admin_pin(pin)) {
+        return ESP_OK;
+    }
+
+    nvs_handle_t handle = 0;
+
+    esp_err_t err =
+        open_namespace(
+            NVS_READONLY,
+            &handle
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    uint8_t salt[TYPEN_ADMIN_SALT_BYTES];
+    uint8_t stored_hash[TYPEN_ADMIN_HASH_BYTES];
+    size_t salt_len = sizeof(salt);
+    size_t hash_len = sizeof(stored_hash);
+
+    err =
+        nvs_get_blob(
+            handle,
+            TYPEN_NVS_ADMIN_SALT,
+            salt,
+            &salt_len
+        );
+
+    if (err == ESP_OK) {
+        err =
+            nvs_get_blob(
+                handle,
+                TYPEN_NVS_ADMIN_HASH,
+                stored_hash,
+                &hash_len
+            );
+    }
+
+    nvs_close(handle);
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (salt_len != sizeof(salt) ||
+        hash_len != sizeof(stored_hash)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    uint8_t candidate[TYPEN_ADMIN_HASH_BYTES];
+
+    err =
+        hash_admin_pin(
+            salt,
+            pin,
+            candidate
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    *matches =
+        constant_time_equal(
+            candidate,
+            stored_hash,
+            sizeof(candidate)
+        );
+
+    return ESP_OK;
+}
+
+esp_err_t typen_settings_clear_admin_pin(void)
+{
+    nvs_handle_t handle = 0;
+
+    esp_err_t err =
+        open_namespace(
+            NVS_READWRITE,
+            &handle
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_err_t salt_err =
+        nvs_erase_key(
+            handle,
+            TYPEN_NVS_ADMIN_SALT
+        );
+
+    if (salt_err == ESP_ERR_NVS_NOT_FOUND) {
+        salt_err = ESP_OK;
+    }
+
+    esp_err_t hash_err =
+        nvs_erase_key(
+            handle,
+            TYPEN_NVS_ADMIN_HASH
+        );
+
+    if (hash_err == ESP_ERR_NVS_NOT_FOUND) {
+        hash_err = ESP_OK;
+    }
+
+    if (salt_err == ESP_OK &&
+        hash_err == ESP_OK) {
+        err =
+            nvs_commit(handle);
+    } else {
+        err =
+            salt_err != ESP_OK
+                ? salt_err
+                : hash_err;
+    }
+
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(
+            TAG,
+            "Admin PIN protection disabled"
+        );
+    }
+
+    return err;
+}
+
+esp_err_t typen_settings_factory_reset(void)
+{
+    nvs_handle_t handle = 0;
+
+    esp_err_t err =
+        open_namespace(
+            NVS_READWRITE,
+            &handle
+        );
+
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err =
+        nvs_erase_all(handle);
+
+    if (err == ESP_OK) {
+        err =
+            nvs_commit(handle);
+    }
+
+    nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "TypeN settings factory reset"
+        );
+    }
+
+    return err;
+}
+

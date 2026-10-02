@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -17,6 +18,9 @@ extern "C" {
 #define TYPEN_BRIGHTNESS_MIN             5
 #define TYPEN_BRIGHTNESS_MAX             100
 #define TYPEN_DEFAULT_BRIGHTNESS         40
+
+#define TYPEN_ADMIN_PIN_MIN_DIGITS          4
+#define TYPEN_ADMIN_PIN_MAX_DIGITS          8
 
 esp_err_t typen_settings_init(void);
 
@@ -46,6 +50,23 @@ esp_err_t typen_settings_set_brightness(
 
 esp_err_t typen_settings_get_brightness(
     uint8_t *percent);
+
+bool typen_settings_admin_pin_enabled(void);
+
+esp_err_t typen_settings_set_admin_pin(
+    const char *pin);
+
+esp_err_t typen_settings_verify_admin_pin(
+    const char *pin,
+    bool *matches);
+
+esp_err_t typen_settings_clear_admin_pin(void);
+
+/*
+ * Clears the TypeN NVS namespace only. SD media and firmware partitions are
+ * intentionally untouched.
+ */
+esp_err_t typen_settings_factory_reset(void);
 
 #ifdef __cplusplus
 }

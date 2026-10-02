@@ -955,6 +955,27 @@ void typen_playback_pause(bool paused)
     }
 }
 
+const uint16_t *typen_playback_current_framebuffer(void)
+{
+    if (!s_state_lock) {
+        return NULL;
+    }
+
+    xSemaphoreTake(
+        s_state_lock,
+        portMAX_DELAY
+    );
+
+    const uint16_t *frame =
+        s_last_presented;
+
+    xSemaphoreGive(
+        s_state_lock
+    );
+
+    return frame;
+}
+
 esp_err_t typen_playback_restore(void)
 {
     xSemaphoreTake(

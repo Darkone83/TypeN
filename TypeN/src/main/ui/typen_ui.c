@@ -1,22 +1,29 @@
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "esp_vfs_fat.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "esp_err.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 
 #include "typen_board.h"
 #include "typen_media.h"
 #include "typen_playback.h"
 #include "typen_settings.h"
+#include "typen_storage.h"
 #include "typen_thumb_cache.h"
 #include "typen_ui.h"
 #include "typen_ui_misc.h"
+#include "typen_update.h"
 
 #define SAFE_X                  125
 #define SAFE_Y                  125
@@ -27,6 +34,24 @@
 #define LONG_PRESS_MS           700
 #define MISC_LONG_PRESS_MS     2000
 #define TAP_MOVE_LIMIT           24
+
+/*
+ * UI animation timing.
+ *
+ * The panel runs at ~65 Hz, so each page-flipped animation frame is held
+ * slightly longer than one scan. This avoids modifying a framebuffer while
+ * DSI is still scanning it.
+ */
+#define UI_ANIM_FRAMES           10
+#define UI_ANIM_FRAME_MS         18
+#define UI_ANIM_SETTLE_MS        18
+#define UI_ANIM_PRESS_MS         55
+
+#define STARTUP_FLOURISH_FRAMES  18
+#define STARTUP_RING_STEPS       56
+
+#define UI_FB_PIXELS     ((size_t)TYPEN_LCD_W * (size_t)TYPEN_LCD_H)
+#define UI_FB_BYTES     (UI_FB_PIXELS * sizeof(uint16_t))
 
 #define C_BLACK             0x0000
 #define C_BG                0x0020
@@ -63,6 +88,7 @@ typedef enum {
     PAGE_DISPLAY,
     PAGE_MEDIA,
     PAGE_SYSTEM,
+    PAGE_DIAGNOSTICS,
     PAGE_ABOUT,
 } typen_page_t;
 
@@ -80,16 +106,33 @@ static SemaphoreHandle_t s_misc_control_lock = NULL;
 static bool s_menu_visible = false;
 static typen_page_t s_page = PAGE_HOME;
 
+typedef struct {
+    bool active;
+    uint16_t *ui_fb;
+    uint16_t *alt_fb;
+    uint16_t *alt_backup;
+    uint16_t *from_frame;
+    uint16_t *to_frame;
+    uint16_t *displayed_fb;
+} typen_ui_anim_ctx_t;
+
+static typen_ui_anim_ctx_t s_anim = {0};
+static bool s_ui_animating = false;
+static bool s_present_suppressed = false;
+static int s_home_pressed_y = -1;
+
 static uint8_t s_brightness = TYPEN_DEFAULT_BRIGHTNESS;
 static size_t s_media_count = 0;
 static size_t s_media_page_index = 0;
+static size_t s_media_pressed_index = (size_t)-1;
 static bool s_media_confirm_visible = false;
 static size_t s_media_confirm_index = 0;
 static media_confirm_mode_t s_media_confirm_mode =
     MEDIA_CONFIRM_SET;
+static bool s_factory_reset_confirm_visible = false;
 
 static char s_status[48] = "STARTING";
-static char s_wifi[48] = "GATED";
+static char s_wifi[48] = "STARTING";
 
 static void draw_shell(const char *title, const char *subtitle);
 
@@ -381,11 +424,60 @@ static void clear_screen(void)
 
 static void present(void)
 {
-    esp_err_t err = typen_board_present();
+    if (s_present_suppressed) {
+        return;
+    }
+
+    if (!s_anim.active) {
+        esp_err_t err =
+            typen_board_present();
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "present failed: %s",
+                esp_err_to_name(err)
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * During a menu session s_fb always points at the framebuffer that is
+     * NOT currently being scanned. Present it, wait a full scan interval,
+     * then hand drawing to the other native framebuffer.
+     */
+    uint16_t *submitted =
+        s_fb;
+
+    esp_err_t err =
+        typen_board_present_buffer(
+            submitted
+        );
 
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "present failed: %s", esp_err_to_name(err));
+        ESP_LOGW(
+            TAG,
+            "animated present failed: %s",
+            esp_err_to_name(err)
+        );
+        return;
     }
+
+    s_anim.displayed_fb =
+        submitted;
+
+    vTaskDelay(
+        pdMS_TO_TICKS(
+            UI_ANIM_SETTLE_MS
+        )
+    );
+
+    s_fb =
+        submitted == s_anim.ui_fb
+            ? s_anim.alt_fb
+            : s_anim.ui_fb;
 }
 
 
@@ -590,7 +682,8 @@ static size_t media_page_count(void)
 static void draw_media_card(
     int x,
     int y,
-    size_t index)
+    size_t index,
+    const char *active_path)
 {
     typen_media_item_t item;
 
@@ -598,16 +691,45 @@ static void draw_media_card(
         return;
     }
 
+    const bool active =
+        active_path != NULL &&
+        active_path[0] != '\0' &&
+        strcmp(active_path, item.path) == 0;
+
+    const bool pressed =
+        s_media_pressed_index == index;
+
+    const uint16_t border_color =
+        active
+            ? C_ACCENT
+            : (pressed ? C_TEXT_DIM : C_LINE);
+
+    const uint16_t fill_color =
+        pressed
+            ? C_PANEL_PRESSED
+            : C_PANEL_2;
+
     stroke_round_rect(
         x,
         y,
         MEDIA_CARD_W,
         MEDIA_CARD_H,
         14,
-        1,
-        C_LINE,
-        C_PANEL_2
+        active ? 3 : 1,
+        border_color,
+        fill_color
     );
+
+    if (active) {
+        fill_round_rect(
+            x + 5,
+            y + 18,
+            4,
+            MEDIA_CARD_H - 36,
+            2,
+            C_ACCENT
+        );
+    }
 
     draw_media_thumbnail(
         index,
@@ -617,6 +739,25 @@ static void draw_media_card(
         MEDIA_THUMB_W,
         MEDIA_THUMB_H
     );
+
+    if (active) {
+        fill_round_rect(
+            x + 16,
+            y + 14,
+            58,
+            20,
+            8,
+            C_ACCENT_DIM
+        );
+
+        draw_text_center(
+            x + 45,
+            y + 20,
+            "ACTIVE",
+            1,
+            C_ACCENT
+        );
+    }
 
     const int delete_x =
         x + 11 +
@@ -652,7 +793,7 @@ static void draw_media_card(
         y + 106,
         item.name,
         1,
-        C_TEXT,
+        active ? C_ACCENT : C_TEXT,
         31
     );
 }
@@ -673,7 +814,7 @@ static void draw_media_confirmation(void)
         MEDIA_CONFIRM_DELETE;
 
     draw_shell(
-        deleting ? "DELETE MEDIA?" : "SET MEDIA?",
+        deleting ? "DELETE MEDIA?" : "ACTIVATE MEDIA?",
         typen_media_type_name(item.type)
     );
 
@@ -681,64 +822,70 @@ static void draw_media_confirmation(void)
         s_media_confirm_index,
         &item,
         SAFE_X + 110,
-        SAFE_Y + 150,
+        SAFE_Y + 146,
         330,
-        190
+        188
     );
 
     draw_text_ellipsis(
         SAFE_X + 76,
-        SAFE_Y + 365,
+        SAFE_Y + 352,
         item.name,
         2,
         C_TEXT,
         31
     );
 
+    draw_text_center(
+        400,
+        SAFE_Y + 390,
+        deleting
+            ? "PERMANENTLY REMOVE THIS FILE"
+            : "DISPLAY THIS FILE ON TYPE N",
+        1,
+        deleting ? C_WARN : C_TEXT_DIM
+    );
+
+    const int action_y =
+        SAFE_Y + 424;
+
+    const int action_w = 164;
+    const int action_h = 54;
+
     stroke_round_rect(
-        SAFE_X + 86,
-        SAFE_Y + 430,
-        150,
-        50,
-        14,
+        SAFE_X + 72,
+        action_y,
+        action_w,
+        action_h,
+        15,
         1,
         C_LINE,
         C_PANEL_2
     );
 
     draw_text_center(
-        SAFE_X + 161,
-        SAFE_Y + 447,
+        SAFE_X + 72 + action_w / 2,
+        action_y + 18,
         "CANCEL",
         2,
         C_TEXT_DIM
     );
 
-    if (deleting) {
-        draw_text_center(
-            400,
-            SAFE_Y + 402,
-            "THIS CANNOT BE UNDONE",
-            1,
-            C_WARN
-        );
-    }
-
     stroke_round_rect(
-        SAFE_X + 314,
-        SAFE_Y + 430,
-        150,
-        50,
-        14,
-        1,
+        SAFE_X + SAFE_W - 72 - action_w,
+        action_y,
+        action_w,
+        action_h,
+        15,
+        2,
         deleting ? C_WARN : C_ACCENT_DIM,
         C_PANEL_PRESSED
     );
 
     draw_text_center(
-        SAFE_X + 389,
-        SAFE_Y + 447,
-        deleting ? "DELETE" : "SET",
+        SAFE_X + SAFE_W - 72 - action_w / 2,
+        action_y + 18,
+        deleting ? "DELETE" : "ACTIVATE",
         2,
         deleting ? C_WARN : C_ACCENT
     );
@@ -816,18 +963,18 @@ static void draw_back_button(void)
 {
     stroke_round_rect(
         SAFE_X + 34,
-        SAFE_Y + SAFE_H - 66,
-        114,
-        38,
-        12,
+        SAFE_Y + SAFE_H - 70,
+        122,
+        44,
+        13,
         1,
         C_LINE,
         C_PANEL_2
     );
 
     draw_text_center(
-        SAFE_X + 91,
-        SAFE_Y + SAFE_H - 55,
+        SAFE_X + 95,
+        SAFE_Y + SAFE_H - 57,
         "< BACK",
         2,
         C_TEXT_DIM
@@ -844,24 +991,34 @@ static void draw_menu_row(
     const int w = SAFE_W - 96;
     const int h = 66;
 
+    const bool pressed =
+        enabled &&
+        s_home_pressed_y == y;
+
     stroke_round_rect(
         x,
         y,
         w,
         h,
         15,
-        1,
-        enabled ? C_LINE : C_PANEL_2,
-        C_PANEL_2
+        pressed ? 2 : 1,
+        pressed
+            ? C_ACCENT
+            : (enabled ? C_LINE : C_PANEL_2),
+        pressed
+            ? C_PANEL_PRESSED
+            : C_PANEL_2
     );
 
     fill_round_rect(
         x + 14,
         y + 13,
-        4,
+        pressed ? 6 : 4,
         h - 26,
         2,
-        enabled ? C_ACCENT_DIM : C_LINE
+        pressed
+            ? C_ACCENT
+            : (enabled ? C_ACCENT_DIM : C_LINE)
     );
 
     draw_text(
@@ -889,6 +1046,437 @@ static void draw_menu_row(
             C_ACCENT
         );
     }
+}
+
+
+typedef struct {
+    int x;
+    int y;
+    float z;
+    bool valid;
+} startup_flourish_point_t;
+
+static void startup_flourish_line(
+    int x0,
+    int y0,
+    int x1,
+    int y1,
+    uint16_t color)
+{
+    int dx =
+        x1 > x0
+            ? x1 - x0
+            : x0 - x1;
+
+    const int sx =
+        x0 < x1
+            ? 1
+            : -1;
+
+    int dy =
+        y1 > y0
+            ? y0 - y1
+            : y1 - y0;
+
+    const int sy =
+        y0 < y1
+            ? 1
+            : -1;
+
+    int err =
+        dx + dy;
+
+    for (;;) {
+        px(
+            x0,
+            y0,
+            color
+        );
+
+        if (x0 == x1 &&
+            y0 == y1) {
+            break;
+        }
+
+        const int e2 =
+            err * 2;
+
+        if (e2 >= dy) {
+            err += dy;
+            x0 += sx;
+        }
+
+        if (e2 <= dx) {
+            err += dx;
+            y0 += sy;
+        }
+    }
+}
+
+static void startup_flourish_glow_line(
+    int x0,
+    int y0,
+    int x1,
+    int y1,
+    uint16_t halo,
+    uint16_t core)
+{
+    startup_flourish_line(
+        x0 - 1,
+        y0,
+        x1 - 1,
+        y1,
+        halo
+    );
+
+    startup_flourish_line(
+        x0 + 1,
+        y0,
+        x1 + 1,
+        y1,
+        halo
+    );
+
+    startup_flourish_line(
+        x0,
+        y0 - 1,
+        x1,
+        y1 - 1,
+        halo
+    );
+
+    startup_flourish_line(
+        x0,
+        y0 + 1,
+        x1,
+        y1 + 1,
+        halo
+    );
+
+    startup_flourish_line(
+        x0,
+        y0,
+        x1,
+        y1,
+        core
+    );
+}
+
+static startup_flourish_point_t startup_flourish_project(
+    float x,
+    float y,
+    float z,
+    float angle_y,
+    float angle_x,
+    float scale)
+{
+    const float cy =
+        cosf(angle_y);
+
+    const float sy =
+        sinf(angle_y);
+
+    const float cx =
+        cosf(angle_x);
+
+    const float sx =
+        sinf(angle_x);
+
+    const float xr =
+        x * cy +
+        z * sy;
+
+    const float zr =
+        -x * sy +
+        z * cy;
+
+    const float yr =
+        y * cx -
+        zr * sx;
+
+    const float z2 =
+        y * sx +
+        zr * cx;
+
+    const float camera =
+        680.0f;
+
+    const float denom =
+        camera - z2;
+
+    startup_flourish_point_t p = {
+        .x = 0,
+        .y = 0,
+        .z = z2,
+        .valid = false,
+    };
+
+    if (denom < 180.0f) {
+        return p;
+    }
+
+    const float perspective =
+        (520.0f / denom) *
+        scale;
+
+    p.x =
+        400 +
+        (int)(xr * perspective);
+
+    p.y =
+        392 +
+        (int)(yr * perspective);
+
+    p.valid =
+        p.x >= 32 &&
+        p.x < TYPEN_LCD_W - 32 &&
+        p.y >= 32 &&
+        p.y < TYPEN_LCD_H - 32;
+
+    return p;
+}
+
+static void startup_flourish_draw_orbit(
+    float radius_x,
+    float radius_y,
+    float tilt,
+    float spin,
+    float scale,
+    int strength_q8)
+{
+    startup_flourish_point_t prev = {
+        .valid = false
+    };
+
+    const uint16_t halo =
+        strength_q8 > 150
+            ? C_D83_PURPLE_DIM
+            : C_LINE;
+
+    const uint16_t front =
+        strength_q8 > 196
+            ? C_D83_PINK
+            : C_D83_PURPLE;
+
+    for (int step = 0;
+         step <= STARTUP_RING_STEPS;
+         ++step) {
+        const float a =
+            ((float)step /
+             (float)STARTUP_RING_STEPS) *
+            6.28318531f;
+
+        /*
+         * Ellipse in local X/Z plane, with a small vertical component.
+         * The projection supplies the 3D feel; this is intentionally only
+         * decorative and never alters the TypeN logo geometry.
+         */
+        const float x =
+            cosf(a) *
+            radius_x;
+
+        const float y =
+            sinf(a * 2.0f) *
+            radius_y *
+            0.12f;
+
+        const float z =
+            sinf(a) *
+            radius_y;
+
+        startup_flourish_point_t p =
+            startup_flourish_project(
+                x,
+                y,
+                z,
+                spin,
+                tilt,
+                scale
+            );
+
+        if (prev.valid &&
+            p.valid) {
+            const float depth =
+                (prev.z + p.z) *
+                0.5f;
+
+            const uint16_t core =
+                depth > 0.0f
+                    ? front
+                    : C_D83_PURPLE_DIM;
+
+            startup_flourish_glow_line(
+                prev.x,
+                prev.y,
+                p.x,
+                p.y,
+                halo,
+                core
+            );
+        }
+
+        prev = p;
+    }
+}
+
+static void startup_flourish_draw_original_logo(
+    bool show_hint)
+{
+    /*
+     * IMPORTANT:
+     * This is the existing TypeN identity from draw_idle().
+     * Do not alter dimensions, placement, or wordmark treatment here.
+     */
+    stroke_round_rect(
+        315,
+        300,
+        170,
+        170,
+        85,
+        2,
+        C_LINE,
+        C_BG
+    );
+
+    fill_round_rect(
+        392,
+        324,
+        16,
+        74,
+        8,
+        C_ACCENT
+    );
+
+    draw_text_center(
+        400,
+        505,
+        "TYPE N",
+        4,
+        C_TEXT
+    );
+
+    if (show_hint) {
+        draw_text_center(
+            400,
+            550,
+            "HOLD FOR MENU",
+            2,
+            C_TEXT_DIM
+        );
+    }
+}
+
+static void startup_flourish_scene(
+    int progress_q8,
+    bool settled)
+{
+    if (progress_q8 < 0) {
+        progress_q8 = 0;
+    }
+
+    if (progress_q8 > 256) {
+        progress_q8 = 256;
+    }
+
+    clear_screen();
+
+    const float t =
+        (float)progress_q8 /
+        256.0f;
+
+    /*
+     * Flourish starts large and airy, then tightens around the fixed logo.
+     * The logo itself never rotates, scales, extrudes, or changes shape.
+     */
+    const float orbit_scale =
+        1.28f -
+        0.20f * t;
+
+    const float spin =
+        -1.05f +
+        1.62f * t;
+
+    const float settle =
+        sinf(t * 3.14159265f);
+
+    startup_flourish_draw_orbit(
+        238.0f,
+        188.0f,
+        -0.48f +
+            0.12f * settle,
+        spin,
+        orbit_scale,
+        progress_q8
+    );
+
+    startup_flourish_draw_orbit(
+        214.0f,
+        164.0f,
+        0.44f -
+            0.10f * settle,
+        -spin * 0.72f +
+            0.35f,
+        orbit_scale * 0.94f,
+        progress_q8
+    );
+
+    startup_flourish_draw_orbit(
+        196.0f,
+        150.0f,
+        0.06f,
+        spin * 0.46f -
+            0.25f,
+        orbit_scale * 0.90f,
+        progress_q8
+    );
+
+    /*
+     * A few depth points skim the orbit. They are intentionally sparse.
+     */
+    for (int i = 0;
+         i < 4;
+         ++i) {
+        const float a =
+            spin +
+            i * 1.57079633f;
+
+        startup_flourish_point_t p =
+            startup_flourish_project(
+                cosf(a) * 235.0f,
+                -28.0f +
+                    i * 18.0f,
+                sinf(a) * 188.0f,
+                0.0f,
+                -0.24f,
+                orbit_scale
+            );
+
+        if (p.valid) {
+            const int r =
+                p.z > 0.0f
+                    ? 4
+                    : 2;
+
+            fill_round_rect(
+                p.x - r,
+                p.y - r,
+                r * 2 + 1,
+                r * 2 + 1,
+                r,
+                p.z > 0.0f
+                    ? C_D83_PINK
+                    : C_D83_PURPLE_DIM
+            );
+        }
+    }
+
+    /*
+     * Original logo is always the visual anchor and is rendered last so none
+     * of the decorative 3D lines can cut through it.
+     */
+    startup_flourish_draw_original_logo(
+        settled
+    );
 }
 
 static void draw_idle(void)
@@ -954,7 +1542,7 @@ static void draw_home(void)
     draw_menu_row(
         SAFE_Y + 220,
         "MEDIA",
-        "BROWSER NEXT",
+        "SD LIBRARY",
         true
     );
 
@@ -973,9 +1561,9 @@ static void draw_home(void)
     );
 
     stroke_round_rect(
-        SAFE_X + 196,
-        SAFE_Y + 462,
-        158,
+        SAFE_X + 190,
+        SAFE_Y + 458,
+        170,
         44,
         14,
         1,
@@ -985,7 +1573,7 @@ static void draw_home(void)
 
     draw_text_center(
         400,
-        SAFE_Y + 476,
+        SAFE_Y + 471,
         "CLOSE",
         2,
         C_TEXT_DIM
@@ -1052,9 +1640,25 @@ static void draw_display_page(void)
         C_TEXT
     );
 
+    draw_text(
+        track_x,
+        SAFE_Y + 338,
+        "5%",
+        1,
+        C_TEXT_DIM
+    );
+
+    draw_text_right(
+        track_x + track_w,
+        SAFE_Y + 338,
+        "100%",
+        1,
+        C_TEXT_DIM
+    );
+
     draw_text_center(
         400,
-        SAFE_Y + 350,
+        SAFE_Y + 366,
         "TAP BAR TO ADJUST",
         2,
         C_TEXT_DIM
@@ -1112,6 +1716,14 @@ static void draw_media_page(void)
     const size_t first =
         s_media_page_index * MEDIA_PER_PAGE;
 
+    char active_path[TYPEN_SETTINGS_PATH_MAX] = {0};
+
+    if (typen_settings_get_selected_media(
+            active_path,
+            sizeof(active_path)) != ESP_OK) {
+        active_path[0] = '\0';
+    }
+
     const int card_x[MEDIA_PER_PAGE] = {
         left_x,
         right_x,
@@ -1138,7 +1750,8 @@ static void draw_media_page(void)
         draw_media_card(
             card_x[slot],
             card_y[slot],
-            index
+            index,
+            active_path
         );
     }
 
@@ -1206,85 +1819,601 @@ static void draw_media_page(void)
     present();
 }
 
+static const char *ui_reset_reason_name(
+    esp_reset_reason_t reason)
+{
+    switch (reason) {
+        case ESP_RST_POWERON:
+            return "POWER ON";
+        case ESP_RST_EXT:
+            return "EXTERNAL";
+        case ESP_RST_SW:
+            return "SOFTWARE";
+        case ESP_RST_PANIC:
+            return "PANIC";
+        case ESP_RST_INT_WDT:
+            return "INT WDT";
+        case ESP_RST_TASK_WDT:
+            return "TASK WDT";
+        case ESP_RST_WDT:
+            return "WATCHDOG";
+        case ESP_RST_DEEPSLEEP:
+            return "DEEP SLEEP";
+        case ESP_RST_BROWNOUT:
+            return "BROWNOUT";
+        case ESP_RST_SDIO:
+            return "SDIO";
+        case ESP_RST_UNKNOWN:
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static void format_bytes_short(
+    uint64_t bytes,
+    char *out,
+    size_t out_size)
+{
+    if (!out ||
+        out_size == 0) {
+        return;
+    }
+
+    const uint64_t gib =
+        UINT64_C(1024) *
+        UINT64_C(1024) *
+        UINT64_C(1024);
+
+    const uint64_t mib =
+        UINT64_C(1024) *
+        UINT64_C(1024);
+
+    const uint64_t kib =
+        UINT64_C(1024);
+
+    if (bytes >= gib) {
+        const uint64_t tenths =
+            (bytes * UINT64_C(10)) /
+            gib;
+
+        snprintf(
+            out,
+            out_size,
+            "%llu.%llu GB",
+            (unsigned long long)(
+                tenths / UINT64_C(10)
+            ),
+            (unsigned long long)(
+                tenths % UINT64_C(10)
+            )
+        );
+    } else if (bytes >= mib) {
+        const uint64_t tenths =
+            (bytes * UINT64_C(10)) /
+            mib;
+
+        snprintf(
+            out,
+            out_size,
+            "%llu.%llu MB",
+            (unsigned long long)(
+                tenths / UINT64_C(10)
+            ),
+            (unsigned long long)(
+                tenths % UINT64_C(10)
+            )
+        );
+    } else if (bytes >= kib) {
+        snprintf(
+            out,
+            out_size,
+            "%llu KB",
+            (unsigned long long)(
+                bytes /
+                kib
+            )
+        );
+    } else {
+        snprintf(
+            out,
+            out_size,
+            "%llu B",
+            (unsigned long long)bytes
+        );
+    }
+}
+
+static void format_uptime_short(
+    uint64_t uptime_ms,
+    char *out,
+    size_t out_size)
+{
+    if (!out ||
+        out_size == 0) {
+        return;
+    }
+
+    uint64_t seconds =
+        uptime_ms /
+        UINT64_C(1000);
+
+    const uint64_t days =
+        seconds /
+        UINT64_C(86400);
+
+    seconds %=
+        UINT64_C(86400);
+
+    const uint64_t hours =
+        seconds /
+        UINT64_C(3600);
+
+    seconds %=
+        UINT64_C(3600);
+
+    const uint64_t minutes =
+        seconds /
+        UINT64_C(60);
+
+    seconds %=
+        UINT64_C(60);
+
+    if (days > 0) {
+        snprintf(
+            out,
+            out_size,
+            "%lluD %lluH",
+            (unsigned long long)days,
+            (unsigned long long)hours
+        );
+    } else if (hours > 0) {
+        snprintf(
+            out,
+            out_size,
+            "%lluH %lluM",
+            (unsigned long long)hours,
+            (unsigned long long)minutes
+        );
+    } else if (minutes > 0) {
+        snprintf(
+            out,
+            out_size,
+            "%lluM %lluS",
+            (unsigned long long)minutes,
+            (unsigned long long)seconds
+        );
+    } else {
+        snprintf(
+            out,
+            out_size,
+            "%lluS",
+            (unsigned long long)seconds
+        );
+    }
+}
+
 static void draw_system_page(void)
 {
     s_page = PAGE_SYSTEM;
 
-    draw_shell("SYSTEM", "LOCAL STATUS");
+    draw_shell("SYSTEM", "DEVICE STATUS");
 
-    draw_text(
-        SAFE_X + 64,
-        SAFE_Y + 166,
-        "STORAGE",
-        2,
-        C_TEXT_DIM
-    );
+    const int x = SAFE_X + 56;
+    const int w = SAFE_W - 112;
+    const int h = 72;
 
-    draw_text_right(
-        SAFE_X + SAFE_W - 64,
-        SAFE_Y + 166,
-        strcmp(s_status, "READY") == 0 ? "READY" : s_status,
-        2,
-        strcmp(s_status, "READY") == 0 ? C_ACCENT : C_TEXT
-    );
+    const bool storage_problem =
+        strstr(s_status, "fail") != NULL ||
+        strstr(s_status, "Fail") != NULL ||
+        strstr(s_status, "unavailable") != NULL ||
+        strstr(s_status, "Unavailable") != NULL;
 
-    fill_rect(
-        SAFE_X + 64,
-        SAFE_Y + 198,
-        SAFE_W - 128,
-        1,
-        C_LINE
-    );
+    const bool wifi_ready =
+        strchr(s_wifi, '.') != NULL;
 
-    draw_text(
-        SAFE_X + 64,
-        SAFE_Y + 224,
-        "MEDIA",
-        2,
-        C_TEXT_DIM
-    );
+    char media_value[24];
 
-    char count[24];
     snprintf(
-        count,
-        sizeof(count),
-        "%u FILES",
-        (unsigned)s_media_count
+        media_value,
+        sizeof(media_value),
+        "%u FILE%s",
+        (unsigned)s_media_count,
+        s_media_count == 1 ? "" : "S"
     );
 
-    draw_text_right(
-        SAFE_X + SAFE_W - 64,
-        SAFE_Y + 224,
-        count,
-        2,
-        C_TEXT
-    );
+    const int row_y[3] = {
+        SAFE_Y + 148,
+        SAFE_Y + 230,
+        SAFE_Y + 312
+    };
 
-    fill_rect(
-        SAFE_X + 64,
-        SAFE_Y + 256,
-        SAFE_W - 128,
+    const char *labels[3] = {
+        "STORAGE",
+        "MEDIA",
+        "WI-FI"
+    };
+
+    const char *values[3] = {
+        s_status,
+        media_value,
+        s_wifi
+    };
+
+    const uint16_t value_colors[3] = {
+        storage_problem ? C_WARN : C_ACCENT,
+        C_TEXT,
+        wifi_ready ? C_ACCENT : C_WARN
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        stroke_round_rect(
+            x,
+            row_y[i],
+            w,
+            h,
+            16,
+            1,
+            C_LINE,
+            C_PANEL_2
+        );
+
+        fill_round_rect(
+            x + 12,
+            row_y[i] + 14,
+            4,
+            h - 28,
+            2,
+            value_colors[i]
+        );
+
+        draw_text(
+            x + 32,
+            row_y[i] + 12,
+            labels[i],
+            1,
+            C_TEXT_DIM
+        );
+
+        draw_text_right(
+            x + w - 22,
+            row_y[i] + 31,
+            values[i],
+            2,
+            value_colors[i]
+        );
+    }
+
+    const int action_x =
+        SAFE_X + 56;
+
+    const int action_y =
+        SAFE_Y + 397;
+
+    const int action_gap = 16;
+
+    const int action_w =
+        (SAFE_W - 112 - action_gap) / 2;
+
+    const int action_h = 54;
+
+    stroke_round_rect(
+        action_x,
+        action_y,
+        action_w,
+        action_h,
+        15,
         1,
-        C_LINE
+        C_ACCENT,
+        C_PANEL_2
     );
 
-    draw_text(
-        SAFE_X + 64,
-        SAFE_Y + 282,
-        "WI-FI",
+    draw_text_center(
+        action_x + action_w / 2,
+        action_y + 18,
+        "DIAGNOSTICS",
         2,
-        C_TEXT_DIM
+        C_ACCENT
     );
 
-    draw_text_right(
-        SAFE_X + SAFE_W - 64,
-        SAFE_Y + 282,
-        s_wifi,
+    const int reset_x =
+        action_x +
+        action_w +
+        action_gap;
+
+    stroke_round_rect(
+        reset_x,
+        action_y,
+        action_w,
+        action_h,
+        15,
+        1,
+        C_WARN,
+        C_PANEL_2
+    );
+
+    draw_text_center(
+        reset_x + action_w / 2,
+        action_y + 18,
+        "FACTORY RESET",
         2,
         C_WARN
     );
 
     draw_back_button();
+
+    present();
+}
+
+static void draw_diagnostics_page(void)
+{
+    s_page = PAGE_DIAGNOSTICS;
+
+    draw_shell(
+        "DIAGNOSTICS",
+        "LIVE DEVICE STATUS"
+    );
+
+    char uptime[24] = {0};
+    char sd_free[24] = "UNAVAILABLE";
+    char heap_free[24] = {0};
+    char psram_free[24] = {0};
+
+    format_uptime_short(
+        (uint64_t)(
+            esp_timer_get_time() /
+            1000
+        ),
+        uptime,
+        sizeof(uptime)
+    );
+
+    uint64_t sd_total_bytes = 0;
+    uint64_t sd_free_bytes = 0;
+
+    if (esp_vfs_fat_info(
+            TYPEN_SD_ROOT,
+            &sd_total_bytes,
+            &sd_free_bytes) == ESP_OK) {
+        format_bytes_short(
+            sd_free_bytes,
+            sd_free,
+            sizeof(sd_free)
+        );
+    }
+
+    format_bytes_short(
+        (uint64_t)heap_caps_get_free_size(
+            MALLOC_CAP_INTERNAL |
+            MALLOC_CAP_8BIT
+        ),
+        heap_free,
+        sizeof(heap_free)
+    );
+
+    format_bytes_short(
+        (uint64_t)heap_caps_get_free_size(
+            MALLOC_CAP_SPIRAM |
+            MALLOC_CAP_8BIT
+        ),
+        psram_free,
+        sizeof(psram_free)
+    );
+
+    typen_update_status_t update_status;
+    memset(
+        &update_status,
+        0,
+        sizeof(update_status)
+    );
+
+    typen_update_get_status(
+        &update_status
+    );
+
+    char ota_value[48];
+
+    if (update_status.running_partition[0]) {
+        snprintf(
+            ota_value,
+            sizeof(ota_value),
+            "%s / %s",
+            update_status.running_partition,
+            update_status.image_state[0]
+                ? update_status.image_state
+                : "UNKNOWN"
+        );
+    } else {
+        snprintf(
+            ota_value,
+            sizeof(ota_value),
+            "%s",
+            "UNKNOWN"
+        );
+    }
+
+    const char *labels[6] = {
+        "UPTIME",
+        "RESET",
+        "SD FREE",
+        "HEAP FREE",
+        "PSRAM FREE",
+        "OTA"
+    };
+
+    const char *values[6] = {
+        uptime,
+        ui_reset_reason_name(
+            esp_reset_reason()
+        ),
+        sd_free,
+        heap_free,
+        psram_free,
+        ota_value
+    };
+
+    const int card_gap = 16;
+    const int card_w =
+        (SAFE_W - 88 - card_gap) / 2;
+
+    const int card_h = 72;
+    const int left_x = SAFE_X + 44;
+    const int right_x =
+        left_x + card_w + card_gap;
+
+    const int row_y[3] = {
+        SAFE_Y + 148,
+        SAFE_Y + 230,
+        SAFE_Y + 312
+    };
+
+    for (int i = 0; i < 6; ++i) {
+        const int col =
+            i & 1;
+
+        const int row =
+            i / 2;
+
+        const int x =
+            col
+                ? right_x
+                : left_x;
+
+        stroke_round_rect(
+            x,
+            row_y[row],
+            card_w,
+            card_h,
+            16,
+            1,
+            C_LINE,
+            C_PANEL_2
+        );
+
+        fill_round_rect(
+            x + 12,
+            row_y[row] + 14,
+            4,
+            card_h - 28,
+            2,
+            i == 1
+                ? C_TEXT_DIM
+                : C_ACCENT
+        );
+
+        draw_text(
+            x + 30,
+            row_y[row] + 12,
+            labels[i],
+            1,
+            C_TEXT_DIM
+        );
+
+        draw_text_right(
+            x + card_w - 18,
+            row_y[row] + 34,
+            values[i],
+            1,
+            i == 1
+                ? C_TEXT
+                : C_ACCENT
+        );
+    }
+
+    draw_text_center(
+        400,
+        SAFE_Y + 410,
+        "WEBUI HAS FULL SUPPORT DETAILS",
+        1,
+        C_TEXT_DIM
+    );
+
+    draw_back_button();
+
+    present();
+}
+
+static void draw_factory_reset_confirmation(void)
+{
+    draw_shell(
+        "FACTORY RESET?",
+        "SETTINGS ONLY"
+    );
+
+    draw_text_center(
+        400,
+        SAFE_Y + 176,
+        "CLEARS TYPE N SETTINGS",
+        2,
+        C_TEXT
+    );
+
+    draw_text_center(
+        400,
+        SAFE_Y + 216,
+        "ADMIN PIN + ACTIVE MEDIA",
+        2,
+        C_WARN
+    );
+
+    draw_text_center(
+        400,
+        SAFE_Y + 258,
+        "BRIGHTNESS + CUSTOM PATHS",
+        1,
+        C_TEXT_DIM
+    );
+
+    draw_text_center(
+        400,
+        SAFE_Y + 286,
+        "SD MEDIA AND FIRMWARE ARE KEPT",
+        1,
+        C_TEXT_DIM
+    );
+
+    const int action_y =
+        SAFE_Y + 424;
+
+    const int action_w = 164;
+    const int action_h = 54;
+
+    stroke_round_rect(
+        SAFE_X + 72,
+        action_y,
+        action_w,
+        action_h,
+        15,
+        1,
+        C_LINE,
+        C_PANEL_2
+    );
+
+    draw_text_center(
+        SAFE_X + 72 + action_w / 2,
+        action_y + 18,
+        "CANCEL",
+        2,
+        C_TEXT_DIM
+    );
+
+    stroke_round_rect(
+        SAFE_X + SAFE_W - 72 - action_w,
+        action_y,
+        action_w,
+        action_h,
+        15,
+        2,
+        C_WARN,
+        C_PANEL_PRESSED
+    );
+
+    draw_text_center(
+        SAFE_X + SAFE_W - 72 - action_w / 2,
+        action_y + 18,
+        "RESET",
+        2,
+        C_WARN
+    );
 
     present();
 }
@@ -1424,62 +2553,119 @@ static void draw_about_page(void)
 
     draw_shell("ABOUT", "TYPE N");
 
-    /*
-     * Identity block kept compact so the credits are the visual focus.
-     */
+    typen_update_status_t update_status;
+    memset(
+        &update_status,
+        0,
+        sizeof(update_status)
+    );
+
+    typen_update_get_status(
+        &update_status
+    );
+
+    const char *version =
+        update_status.running_version[0]
+            ? update_status.running_version
+            : "UNKNOWN";
+
+    const char *variant =
+        update_status.running_variant[0]
+            ? update_status.running_variant
+            : "TYPE N";
+
+    char identity_line[48];
+
+    if (update_status.running_firmware_abi > 0) {
+        snprintf(
+            identity_line,
+            sizeof(identity_line),
+            "%s / ABI %u",
+            variant,
+            (unsigned)update_status.running_firmware_abi
+        );
+    } else {
+        snprintf(
+            identity_line,
+            sizeof(identity_line),
+            "%s",
+            variant
+        );
+    }
+
     draw_text_center(
         400,
-        SAFE_Y + 148,
+        SAFE_Y + 142,
         "TYPE N",
-        4,
+        3,
         C_TEXT
     );
 
     draw_text_center(
         400,
-        SAFE_Y + 184,
-        "ROUND MEDIA DISPLAY",
-        2,
-        C_TEXT_DIM
+        SAFE_Y + 174,
+        version,
+        3,
+        C_ACCENT
     );
 
-    fill_rect(
-        SAFE_X + 72,
-        SAFE_Y + 214,
-        SAFE_W - 144,
+    draw_text_center(
+        400,
+        SAFE_Y + 204,
+        identity_line,
         1,
-        C_LINE
+        C_TEXT_DIM
     );
 
     draw_brand_header_darkone83(
         SAFE_X + 78,
-        SAFE_Y + 234,
+        SAFE_Y + 228,
         SAFE_W - 156,
-        80
+        74
     );
 
     draw_brand_header_macho_nacho(
         SAFE_X + 78,
-        SAFE_Y + 330,
+        SAFE_Y + 316,
         SAFE_W - 156,
-        86
+        78
     );
 
-    /*
-     * Technical identity is secondary on this page.
-     */
+    char slot_line[64];
+
+    snprintf(
+        slot_line,
+        sizeof(slot_line),
+        "SLOT %s / %s",
+        update_status.running_partition[0]
+            ? update_status.running_partition
+            : "UNKNOWN",
+        update_status.image_state[0]
+            ? update_status.image_state
+            : "UNKNOWN"
+    );
+
     draw_text_center(
         400,
-        SAFE_Y + 438,
-        "ESP32-P4 / ESP-IDF 5.5.1",
+        SAFE_Y + 414,
+        slot_line,
         1,
         C_TEXT_DIM
     );
 
+    char idf_line[64];
+
+    snprintf(
+        idf_line,
+        sizeof(idf_line),
+        "ESP-IDF %s",
+        esp_get_idf_version()
+    );
+
     draw_text_center(
         400,
-        SAFE_Y + 456,
-        "800 X 800 / RGB565",
+        SAFE_Y + 434,
+        idf_line,
         1,
         C_TEXT_DIM
     );
@@ -1487,6 +2673,873 @@ static void draw_about_page(void)
     draw_back_button();
 
     present();
+}
+
+
+/* -------------------------------------------------------------------------- */
+/* Smooth page-flipped device animations                                      */
+/* -------------------------------------------------------------------------- */
+
+typedef void (*ui_draw_fn_t)(void);
+
+typedef enum {
+    UI_PUSH_LEFT = 0,
+    UI_PUSH_RIGHT,
+    UI_PUSH_UP,
+    UI_PUSH_DOWN,
+} ui_push_direction_t;
+
+static uint16_t *ui_anim_alloc_frame(void)
+{
+    return (uint16_t *)
+        heap_caps_malloc(
+            UI_FB_BYTES,
+            MALLOC_CAP_SPIRAM |
+            MALLOC_CAP_8BIT
+        );
+}
+
+static void ui_anim_free_frame(
+    uint16_t **frame)
+{
+    if (frame && *frame) {
+        heap_caps_free(*frame);
+        *frame = NULL;
+    }
+}
+
+static int ui_anim_ease_q8(
+    int frame,
+    int frame_count)
+{
+    if (frame <= 0) {
+        return 0;
+    }
+
+    if (frame >= frame_count) {
+        return 256;
+    }
+
+    /*
+     * Cubic smoothstep:
+     *   3t^2 - 2t^3
+     *
+     * Gives visible travel without the abrupt stop of a linear wipe.
+     */
+    const int t =
+        (frame * 256) /
+        frame_count;
+
+    const int t2 =
+        (t * t) >> 8;
+
+    const int t3 =
+        (t2 * t) >> 8;
+
+    return
+        3 * t2 -
+        2 * t3;
+}
+
+static const uint16_t *ui_anim_playback_source(void)
+{
+    const uint16_t *frame =
+        typen_playback_current_framebuffer();
+
+    if (!frame) {
+        return NULL;
+    }
+
+    /*
+     * If playback's current frame is the borrowed alternate framebuffer,
+     * use its preserved copy instead of the animation pixels now living there.
+     */
+    if (s_anim.active &&
+        frame == s_anim.alt_fb &&
+        s_anim.alt_backup) {
+        return s_anim.alt_backup;
+    }
+
+    return frame;
+}
+
+static bool ui_anim_session_begin(void)
+{
+    if (s_anim.active) {
+        return true;
+    }
+
+    uint16_t *ui_fb =
+        typen_board_framebuffer();
+
+    uint16_t *alt_fb =
+        typen_board_playback_buffer(0);
+
+    if (!ui_fb ||
+        !alt_fb) {
+        return false;
+    }
+
+    uint16_t *backup =
+        ui_anim_alloc_frame();
+
+    uint16_t *from_frame =
+        ui_anim_alloc_frame();
+
+    uint16_t *to_frame =
+        ui_anim_alloc_frame();
+
+    if (!backup ||
+        !from_frame ||
+        !to_frame) {
+        ui_anim_free_frame(&backup);
+        ui_anim_free_frame(&from_frame);
+        ui_anim_free_frame(&to_frame);
+
+        ESP_LOGW(
+            TAG,
+            "UI animation buffers unavailable; using static transitions"
+        );
+
+        return false;
+    }
+
+    memcpy(
+        backup,
+        alt_fb,
+        UI_FB_BYTES
+    );
+
+    const uint16_t *visible =
+        typen_playback_has_frame()
+            ? typen_playback_current_framebuffer()
+            : ui_fb;
+
+    if (!visible) {
+        visible = ui_fb;
+    }
+
+    memcpy(
+        from_frame,
+        visible,
+        UI_FB_BYTES
+    );
+
+    s_anim.active = true;
+    s_anim.ui_fb = ui_fb;
+    s_anim.alt_fb = alt_fb;
+    s_anim.alt_backup = backup;
+    s_anim.from_frame = from_frame;
+    s_anim.to_frame = to_frame;
+    s_anim.displayed_fb =
+        (uint16_t *)visible;
+
+    /*
+     * Draw the first UI animation frame into a native framebuffer that is not
+     * currently visible.
+     */
+    s_fb =
+        visible == ui_fb
+            ? alt_fb
+            : ui_fb;
+
+    return true;
+}
+
+static void ui_anim_force_ui_scanout(void)
+{
+    if (!s_anim.active ||
+        !s_anim.ui_fb) {
+        return;
+    }
+
+    if (s_anim.displayed_fb ==
+        s_anim.ui_fb) {
+        return;
+    }
+
+    /*
+     * Copy the current displayed picture to FB0 so switching scanout doesn't
+     * visually jump before the borrowed playback buffer is restored.
+     */
+    if (s_anim.displayed_fb) {
+        memcpy(
+            s_anim.ui_fb,
+            s_anim.displayed_fb,
+            UI_FB_BYTES
+        );
+    }
+
+    esp_err_t err =
+        typen_board_present_buffer(
+            s_anim.ui_fb
+        );
+
+    if (err == ESP_OK) {
+        s_anim.displayed_fb =
+            s_anim.ui_fb;
+
+        vTaskDelay(
+            pdMS_TO_TICKS(
+                UI_ANIM_SETTLE_MS
+            )
+        );
+    } else {
+        ESP_LOGW(
+            TAG,
+            "Unable to return animation scanout to UI framebuffer: %s",
+            esp_err_to_name(err)
+        );
+    }
+}
+
+static void ui_anim_session_end(void)
+{
+    if (!s_anim.active) {
+        s_fb =
+            typen_board_framebuffer();
+        return;
+    }
+
+    ui_anim_force_ui_scanout();
+
+    if (s_anim.alt_fb &&
+        s_anim.alt_backup) {
+        memcpy(
+            s_anim.alt_fb,
+            s_anim.alt_backup,
+            UI_FB_BYTES
+        );
+    }
+
+    ui_anim_free_frame(
+        &s_anim.alt_backup
+    );
+
+    ui_anim_free_frame(
+        &s_anim.from_frame
+    );
+
+    ui_anim_free_frame(
+        &s_anim.to_frame
+    );
+
+    s_fb =
+        s_anim.ui_fb
+            ? s_anim.ui_fb
+            : typen_board_framebuffer();
+
+    memset(
+        &s_anim,
+        0,
+        sizeof(s_anim)
+    );
+}
+
+static void ui_anim_render_to(
+    uint16_t *target,
+    ui_draw_fn_t draw_fn)
+{
+    if (!target ||
+        !draw_fn) {
+        return;
+    }
+
+    uint16_t *saved_fb =
+        s_fb;
+
+    const bool saved_suppressed =
+        s_present_suppressed;
+
+    s_fb = target;
+    s_present_suppressed = true;
+
+    draw_fn();
+
+    s_present_suppressed =
+        saved_suppressed;
+
+    s_fb =
+        saved_fb;
+}
+
+static void ui_anim_snapshot_visible(
+    uint16_t *target)
+{
+    if (!target) {
+        return;
+    }
+
+    const uint16_t *source =
+        s_anim.active
+            ? s_anim.displayed_fb
+            : typen_board_framebuffer();
+
+    if (!source) {
+        memset(
+            target,
+            0,
+            UI_FB_BYTES
+        );
+        return;
+    }
+
+    if (s_anim.active &&
+        source == s_anim.alt_fb &&
+        !s_menu_visible &&
+        s_anim.alt_backup) {
+        source =
+            s_anim.alt_backup;
+    }
+
+    memcpy(
+        target,
+        source,
+        UI_FB_BYTES
+    );
+}
+
+static inline uint16_t ui_blend565(
+    uint16_t a,
+    uint16_t b,
+    unsigned alpha)
+{
+    const unsigned inv =
+        256U - alpha;
+
+    const unsigned ar =
+        (a >> 11) & 0x1FU;
+    const unsigned ag =
+        (a >> 5) & 0x3FU;
+    const unsigned ab =
+        a & 0x1FU;
+
+    const unsigned br =
+        (b >> 11) & 0x1FU;
+    const unsigned bg =
+        (b >> 5) & 0x3FU;
+    const unsigned bb =
+        b & 0x1FU;
+
+    const unsigned r =
+        (ar * inv + br * alpha) >> 8;
+
+    const unsigned g =
+        (ag * inv + bg * alpha) >> 8;
+
+    const unsigned bl =
+        (ab * inv + bb * alpha) >> 8;
+
+    return (uint16_t)(
+        (r << 11) |
+        (g << 5) |
+        bl
+    );
+}
+
+static void ui_anim_compose_crossfade(
+    uint16_t *out,
+    const uint16_t *from,
+    const uint16_t *to,
+    unsigned alpha)
+{
+    if (!out ||
+        !from ||
+        !to) {
+        return;
+    }
+
+    for (size_t i = 0;
+         i < UI_FB_PIXELS;
+         ++i) {
+        out[i] =
+            ui_blend565(
+                from[i],
+                to[i],
+                alpha
+            );
+    }
+}
+
+static void ui_anim_copy_row_segment(
+    uint16_t *dst,
+    int dst_x,
+    const uint16_t *src,
+    int src_x,
+    int y,
+    int width)
+{
+    if (!dst ||
+        !src ||
+        width <= 0) {
+        return;
+    }
+
+    memcpy(
+        &dst[
+            (size_t)y * TYPEN_LCD_W +
+            (size_t)dst_x
+        ],
+        &src[
+            (size_t)y * TYPEN_LCD_W +
+            (size_t)src_x
+        ],
+        (size_t)width *
+            sizeof(uint16_t)
+    );
+}
+
+static void ui_anim_compose_push(
+    uint16_t *out,
+    const uint16_t *from,
+    const uint16_t *to,
+    int progress_q8,
+    ui_push_direction_t direction)
+{
+    if (!out ||
+        !from ||
+        !to) {
+        return;
+    }
+
+    /*
+     * Outside the round UI panel nothing needs to move.
+     */
+    memcpy(
+        out,
+        from,
+        UI_FB_BYTES
+    );
+
+    const int x0 = SAFE_X;
+    const int y0 = SAFE_Y;
+    const int w = SAFE_W;
+    const int h = SAFE_H;
+
+    if (direction == UI_PUSH_LEFT ||
+        direction == UI_PUSH_RIGHT) {
+        const int shift =
+            (w * progress_q8) / 256;
+
+        const int old_w =
+            w - shift;
+
+        const int new_w =
+            shift;
+
+        for (int y = y0;
+             y < y0 + h;
+             ++y) {
+            memset(
+                &out[
+                    (size_t)y * TYPEN_LCD_W +
+                    (size_t)x0
+                ],
+                0,
+                (size_t)w *
+                    sizeof(uint16_t)
+            );
+
+            if (direction ==
+                UI_PUSH_LEFT) {
+                if (old_w > 0) {
+                    ui_anim_copy_row_segment(
+                        out,
+                        x0,
+                        from,
+                        x0 + shift,
+                        y,
+                        old_w
+                    );
+                }
+
+                if (new_w > 0) {
+                    ui_anim_copy_row_segment(
+                        out,
+                        x0 + old_w,
+                        to,
+                        x0,
+                        y,
+                        new_w
+                    );
+                }
+
+                if (shift > 2 &&
+                    old_w > 1) {
+                    out[
+                        (size_t)y *
+                            TYPEN_LCD_W +
+                        (size_t)(x0 + old_w - 1)
+                    ] = C_ACCENT_DIM;
+                }
+            } else {
+                if (old_w > 0) {
+                    ui_anim_copy_row_segment(
+                        out,
+                        x0 + shift,
+                        from,
+                        x0,
+                        y,
+                        old_w
+                    );
+                }
+
+                if (new_w > 0) {
+                    ui_anim_copy_row_segment(
+                        out,
+                        x0,
+                        to,
+                        x0 + old_w,
+                        y,
+                        new_w
+                    );
+                }
+
+                if (shift > 2 &&
+                    shift < w - 1) {
+                    out[
+                        (size_t)y *
+                            TYPEN_LCD_W +
+                        (size_t)(x0 + shift)
+                    ] = C_ACCENT_DIM;
+                }
+            }
+        }
+    } else {
+        const int shift =
+            (h * progress_q8) / 256;
+
+        const int old_h =
+            h - shift;
+
+        const int new_h =
+            shift;
+
+        for (int row = 0;
+             row < h;
+             ++row) {
+            uint16_t *dst =
+                &out[
+                    (size_t)(y0 + row) *
+                        TYPEN_LCD_W +
+                    (size_t)x0
+                ];
+
+            memset(
+                dst,
+                0,
+                (size_t)w *
+                    sizeof(uint16_t)
+            );
+        }
+
+        if (direction ==
+            UI_PUSH_UP) {
+            for (int row = 0;
+                 row < old_h;
+                 ++row) {
+                memcpy(
+                    &out[
+                        (size_t)(y0 + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    &from[
+                        (size_t)(y0 + shift + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    (size_t)w *
+                        sizeof(uint16_t)
+                );
+            }
+
+            for (int row = 0;
+                 row < new_h;
+                 ++row) {
+                memcpy(
+                    &out[
+                        (size_t)(y0 + old_h + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    &to[
+                        (size_t)(y0 + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    (size_t)w *
+                        sizeof(uint16_t)
+                );
+            }
+        } else {
+            for (int row = 0;
+                 row < old_h;
+                 ++row) {
+                memcpy(
+                    &out[
+                        (size_t)(y0 + shift + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    &from[
+                        (size_t)(y0 + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    (size_t)w *
+                        sizeof(uint16_t)
+                );
+            }
+
+            for (int row = 0;
+                 row < new_h;
+                 ++row) {
+                memcpy(
+                    &out[
+                        (size_t)(y0 + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    &to[
+                        (size_t)(y0 + old_h + row) *
+                            TYPEN_LCD_W +
+                        (size_t)x0
+                    ],
+                    (size_t)w *
+                        sizeof(uint16_t)
+                );
+            }
+        }
+    }
+}
+
+static void ui_anim_present_target_final(void)
+{
+    if (!s_anim.active ||
+        !s_anim.to_frame) {
+        return;
+    }
+
+    memcpy(
+        s_fb,
+        s_anim.to_frame,
+        UI_FB_BYTES
+    );
+
+    present();
+}
+
+static void ui_anim_crossfade_to(
+    ui_draw_fn_t draw_fn)
+{
+    if (!s_anim.active ||
+        !draw_fn) {
+        draw_fn();
+        return;
+    }
+
+    s_ui_animating = true;
+
+    ui_anim_snapshot_visible(
+        s_anim.from_frame
+    );
+
+    ui_anim_render_to(
+        s_anim.to_frame,
+        draw_fn
+    );
+
+    for (int frame = 1;
+         frame <= UI_ANIM_FRAMES;
+         ++frame) {
+        const unsigned alpha =
+            (unsigned)ui_anim_ease_q8(
+                frame,
+                UI_ANIM_FRAMES
+            );
+
+        ui_anim_compose_crossfade(
+            s_fb,
+            s_anim.from_frame,
+            s_anim.to_frame,
+            alpha
+        );
+
+        present();
+    }
+
+    ui_anim_present_target_final();
+
+    s_ui_animating = false;
+}
+
+static void ui_anim_push_to(
+    ui_draw_fn_t draw_fn,
+    ui_push_direction_t direction)
+{
+    if (!s_anim.active ||
+        !draw_fn) {
+        draw_fn();
+        return;
+    }
+
+    s_ui_animating = true;
+
+    ui_anim_snapshot_visible(
+        s_anim.from_frame
+    );
+
+    ui_anim_render_to(
+        s_anim.to_frame,
+        draw_fn
+    );
+
+    for (int frame = 1;
+         frame <= UI_ANIM_FRAMES;
+         ++frame) {
+        const int progress =
+            ui_anim_ease_q8(
+                frame,
+                UI_ANIM_FRAMES
+            );
+
+        ui_anim_compose_push(
+            s_fb,
+            s_anim.from_frame,
+            s_anim.to_frame,
+            progress,
+            direction
+        );
+
+        present();
+    }
+
+    ui_anim_present_target_final();
+
+    s_ui_animating = false;
+}
+
+static void ui_anim_home_press(
+    int row_y)
+{
+    if (!s_anim.active) {
+        return;
+    }
+
+    s_ui_animating = true;
+    s_home_pressed_y = row_y;
+
+    draw_home();
+
+    vTaskDelay(
+        pdMS_TO_TICKS(
+            UI_ANIM_PRESS_MS
+        )
+    );
+
+    s_home_pressed_y = -1;
+    s_ui_animating = false;
+}
+
+static void ui_anim_prepare_playback_target(void)
+{
+    const uint16_t *playback =
+        ui_anim_playback_source();
+
+    if (playback) {
+        memcpy(
+            s_anim.to_frame,
+            playback,
+            UI_FB_BYTES
+        );
+        return;
+    }
+
+    ui_anim_render_to(
+        s_anim.to_frame,
+        draw_idle
+    );
+}
+
+static void ui_anim_close_to_playback(void)
+{
+    if (!s_anim.active) {
+        return;
+    }
+
+    s_ui_animating = true;
+
+    ui_anim_snapshot_visible(
+        s_anim.from_frame
+    );
+
+    ui_anim_prepare_playback_target();
+
+    for (int frame = 1;
+         frame <= UI_ANIM_FRAMES;
+         ++frame) {
+        const unsigned alpha =
+            (unsigned)ui_anim_ease_q8(
+                frame,
+                UI_ANIM_FRAMES
+            );
+
+        ui_anim_compose_crossfade(
+            s_fb,
+            s_anim.from_frame,
+            s_anim.to_frame,
+            alpha
+        );
+
+        present();
+    }
+
+    ui_anim_present_target_final();
+
+    s_ui_animating = false;
+
+    /*
+     * Put playback FB0 back exactly as it was before the menu borrowed it.
+     * The UI framebuffer is forced to scanout first so this memcpy can never
+     * race the panel.
+     */
+    ui_anim_session_end();
+}
+
+
+static void ui_anim_startup_flourish(void)
+{
+    if (!s_anim.active) {
+        draw_idle();
+        return;
+    }
+
+    s_ui_animating = true;
+
+    /*
+     * The first visible boot mark is already on screen. Move directly into the
+     * flourish while keeping the original TypeN identity fixed throughout.
+     */
+    for (int frame = 0;
+         frame <= STARTUP_FLOURISH_FRAMES;
+         ++frame) {
+        const int progress =
+            ui_anim_ease_q8(
+                frame,
+                STARTUP_FLOURISH_FRAMES
+            );
+
+        startup_flourish_scene(
+            progress,
+            frame ==
+                STARTUP_FLOURISH_FRAMES
+        );
+
+        present();
+    }
+
+    s_ui_animating = false;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -1511,8 +3564,10 @@ static void close_menu(void)
 {
     s_menu_visible = false;
     s_page = PAGE_HOME;
+    s_media_pressed_index = (size_t)-1;
     s_media_confirm_visible = false;
     s_media_confirm_mode = MEDIA_CONFIRM_SET;
+    s_factory_reset_confirm_visible = false;
 
     typen_thumb_cache_set_paused(true);
 
@@ -1545,7 +3600,14 @@ static void handle_home_tap(int x, int y)
             x, y,
             row_x, SAFE_Y + 146,
             row_w, row_h)) {
-        draw_display_page();
+        ui_anim_home_press(
+            SAFE_Y + 146
+        );
+
+        ui_anim_push_to(
+            draw_display_page,
+            UI_PUSH_LEFT
+        );
         return;
     }
 
@@ -1554,9 +3616,17 @@ static void handle_home_tap(int x, int y)
             row_x, SAFE_Y + 220,
             row_w, row_h)) {
         s_media_page_index = 0;
+        s_media_pressed_index = (size_t)-1;
         s_media_confirm_visible = false;
         s_media_confirm_mode = MEDIA_CONFIRM_SET;
-        draw_media_page();
+        ui_anim_home_press(
+            SAFE_Y + 220
+        );
+
+        ui_anim_push_to(
+            draw_media_page,
+            UI_PUSH_LEFT
+        );
         return;
     }
 
@@ -1564,7 +3634,16 @@ static void handle_home_tap(int x, int y)
             x, y,
             row_x, SAFE_Y + 294,
             row_w, row_h)) {
-        draw_system_page();
+        s_factory_reset_confirm_visible = false;
+
+        ui_anim_home_press(
+            SAFE_Y + 294
+        );
+
+        ui_anim_push_to(
+            draw_system_page,
+            UI_PUSH_LEFT
+        );
         return;
     }
 
@@ -1572,42 +3651,197 @@ static void handle_home_tap(int x, int y)
             x, y,
             row_x, SAFE_Y + 368,
             row_w, row_h)) {
-        draw_about_page();
+        ui_anim_home_press(
+            SAFE_Y + 368
+        );
+
+        ui_anim_push_to(
+            draw_about_page,
+            UI_PUSH_LEFT
+        );
         return;
     }
 
     if (point_in(
             x, y,
-            SAFE_X + 196,
-            SAFE_Y + 462,
-            158,
+            SAFE_X + 190,
+            SAFE_Y + 458,
+            170,
             44)) {
+        ui_anim_close_to_playback();
         close_menu();
     }
 }
 
+static size_t media_card_index_at_point(
+    int x,
+    int y)
+{
+    if (s_page != PAGE_MEDIA ||
+        s_media_confirm_visible ||
+        s_media_count == 0) {
+        return (size_t)-1;
+    }
+
+    const int left_x = SAFE_X + 48;
+    const int right_x =
+        left_x + MEDIA_CARD_W + 16;
+
+    const int top_y = SAFE_Y + 142;
+    const int bottom_y =
+        top_y + MEDIA_CARD_H + 14;
+
+    const int card_x[MEDIA_PER_PAGE] = {
+        left_x,
+        right_x,
+        left_x,
+        right_x
+    };
+
+    const int card_y[MEDIA_PER_PAGE] = {
+        top_y,
+        top_y,
+        bottom_y,
+        bottom_y
+    };
+
+    const size_t first =
+        s_media_page_index * MEDIA_PER_PAGE;
+
+    for (size_t slot = 0;
+         slot < MEDIA_PER_PAGE;
+         ++slot) {
+        const size_t index =
+            first + slot;
+
+        if (index >= s_media_count) {
+            break;
+        }
+
+        if (point_in(
+                x,
+                y,
+                card_x[slot],
+                card_y[slot],
+                MEDIA_CARD_W,
+                MEDIA_CARD_H)) {
+            return index;
+        }
+    }
+
+    return (size_t)-1;
+}
+
 static void handle_subpage_tap(int x, int y)
 {
-    if (s_page == PAGE_MEDIA &&
-        s_media_confirm_visible) {
+    if (s_page == PAGE_SYSTEM &&
+        s_factory_reset_confirm_visible) {
 
         if (point_in(
                 x, y,
-                SAFE_X + 86,
-                SAFE_Y + 430,
-                150,
-                50)) {
-            s_media_confirm_visible = false;
-            draw_media_page();
+                SAFE_X + 72,
+                SAFE_Y + 424,
+                164,
+                54)) {
+            s_factory_reset_confirm_visible = false;
+
+            ui_anim_push_to(
+                draw_system_page,
+                UI_PUSH_DOWN
+            );
             return;
         }
 
         if (point_in(
                 x, y,
-                SAFE_X + 314,
-                SAFE_Y + 430,
-                150,
-                50)) {
+                SAFE_X + SAFE_W - 72 - 164,
+                SAFE_Y + 424,
+                164,
+                54)) {
+            esp_err_t err =
+                typen_settings_factory_reset();
+
+            if (err == ESP_OK) {
+                draw_shell(
+                    "RESETTING",
+                    "TYPE N"
+                );
+
+                draw_text_center(
+                    400,
+                    SAFE_Y + 246,
+                    "SETTINGS CLEARED",
+                    3,
+                    C_ACCENT
+                );
+
+                draw_text_center(
+                    400,
+                    SAFE_Y + 300,
+                    "REBOOTING",
+                    2,
+                    C_TEXT_DIM
+                );
+
+                present();
+
+                vTaskDelay(
+                    pdMS_TO_TICKS(300)
+                );
+
+                esp_restart();
+            } else {
+                ESP_LOGE(
+                    TAG,
+                    "Factory reset failed: %s",
+                    esp_err_to_name(err)
+                );
+
+                s_factory_reset_confirm_visible = false;
+
+                snprintf(
+                    s_status,
+                    sizeof(s_status),
+                    "%s",
+                    "RESET FAILED"
+                );
+
+                ui_anim_push_to(
+                    draw_system_page,
+                    UI_PUSH_DOWN
+                );
+            }
+
+            return;
+        }
+
+        return;
+    }
+
+    if (s_page == PAGE_MEDIA &&
+        s_media_confirm_visible) {
+
+        if (point_in(
+                x, y,
+                SAFE_X + 72,
+                SAFE_Y + 424,
+                164,
+                54)) {
+            s_media_confirm_visible = false;
+
+            ui_anim_push_to(
+                draw_media_page,
+                UI_PUSH_DOWN
+            );
+            return;
+        }
+
+        if (point_in(
+                x, y,
+                SAFE_X + SAFE_W - 72 - 164,
+                SAFE_Y + 424,
+                164,
+                54)) {
             typen_media_item_t item;
 
             esp_err_t err =
@@ -1640,7 +3874,10 @@ static void handle_subpage_tap(int x, int y)
                     s_media_confirm_visible = false;
                     s_media_confirm_mode = MEDIA_CONFIRM_SET;
 
-                    draw_media_page();
+                    ui_anim_push_to(
+                        draw_media_page,
+                        UI_PUSH_DOWN
+                    );
                 } else {
                     ESP_LOGE(
                         TAG,
@@ -1662,6 +3899,14 @@ static void handle_subpage_tap(int x, int y)
             }
 
             if (err == ESP_OK) {
+                /*
+                 * Finish the menu transition and give playback buffers back
+                 * before queueing the new item. Static JPEG/PNG decoding can
+                 * write playback FB0 even while presentation is paused.
+                 */
+                ui_anim_close_to_playback();
+                close_menu();
+
                 err =
                     typen_playback_set(
                         &item
@@ -1674,8 +3919,6 @@ static void handle_subpage_tap(int x, int y)
                     "Selected for playback: %s",
                     item.path
                 );
-
-                close_menu();
             } else {
                 ESP_LOGE(
                     TAG,
@@ -1697,11 +3940,59 @@ static void handle_subpage_tap(int x, int y)
     if (point_in(
             x, y,
             SAFE_X + 34,
-            SAFE_Y + SAFE_H - 66,
-            114,
-            38)) {
-        draw_home();
+            SAFE_Y + SAFE_H - 70,
+            122,
+            44)) {
+        ui_anim_push_to(
+            s_page == PAGE_DIAGNOSTICS
+                ? draw_system_page
+                : draw_home,
+            UI_PUSH_RIGHT
+        );
         return;
+    }
+
+    if (s_page == PAGE_SYSTEM) {
+        const int action_x =
+            SAFE_X + 56;
+
+        const int action_y =
+            SAFE_Y + 397;
+
+        const int action_gap = 16;
+
+        const int action_w =
+            (SAFE_W - 112 - action_gap) / 2;
+
+        if (point_in(
+                x, y,
+                action_x,
+                action_y,
+                action_w,
+                54)) {
+            ui_anim_push_to(
+                draw_diagnostics_page,
+                UI_PUSH_LEFT
+            );
+            return;
+        }
+
+        if (point_in(
+                x, y,
+                action_x +
+                    action_w +
+                    action_gap,
+                action_y,
+                action_w,
+                54)) {
+            s_factory_reset_confirm_visible = true;
+
+            ui_anim_push_to(
+                draw_factory_reset_confirmation,
+                UI_PUSH_UP
+            );
+            return;
+        }
     }
 
     if (s_page == PAGE_MEDIA) {
@@ -1715,7 +4006,11 @@ static void handle_subpage_tap(int x, int y)
                 58,
                 38)) {
             --s_media_page_index;
-            draw_media_page();
+
+            ui_anim_push_to(
+                draw_media_page,
+                UI_PUSH_RIGHT
+            );
             return;
         }
 
@@ -1727,7 +4022,11 @@ static void handle_subpage_tap(int x, int y)
                 58,
                 38)) {
             ++s_media_page_index;
-            draw_media_page();
+
+            ui_anim_push_to(
+                draw_media_page,
+                UI_PUSH_LEFT
+            );
             return;
         }
 
@@ -1784,7 +4083,11 @@ static void handle_subpage_tap(int x, int y)
                 s_media_confirm_index = index;
                 s_media_confirm_mode = MEDIA_CONFIRM_DELETE;
                 s_media_confirm_visible = true;
-                draw_media_confirmation();
+
+                ui_anim_push_to(
+                    draw_media_confirmation,
+                    UI_PUSH_UP
+                );
                 return;
             }
 
@@ -1797,7 +4100,11 @@ static void handle_subpage_tap(int x, int y)
                 s_media_confirm_index = index;
                 s_media_confirm_mode = MEDIA_CONFIRM_SET;
                 s_media_confirm_visible = true;
-                draw_media_confirmation();
+
+                ui_anim_push_to(
+                    draw_media_confirmation,
+                    UI_PUSH_UP
+                );
                 return;
             }
         }
@@ -2017,6 +4324,23 @@ static void touch_task(void *arg)
                 down_y = y;
                 down_tick =
                     xTaskGetTickCount();
+
+                if (s_menu_visible &&
+                    s_page == PAGE_MEDIA &&
+                    !s_media_confirm_visible) {
+                    const size_t pressed_index =
+                        media_card_index_at_point(
+                            x,
+                            y
+                        );
+
+                    if (pressed_index !=
+                        (size_t)-1) {
+                        s_media_pressed_index =
+                            pressed_index;
+                        draw_media_page();
+                    }
+                }
             } else if (!s_menu_visible &&
                        !long_fired &&
                        (xTaskGetTickCount() -
@@ -2030,7 +4354,16 @@ static void touch_task(void *arg)
                 typen_thumb_cache_set_paused(false);
 
                 s_menu_visible = true;
-                draw_home();
+
+                if (ui_anim_session_begin()) {
+                    ui_anim_crossfade_to(
+                        draw_home
+                    );
+                } else {
+                    s_fb =
+                        typen_board_framebuffer();
+                    draw_home();
+                }
 
                 ESP_LOGI(
                     TAG,
@@ -2049,6 +4382,13 @@ static void touch_task(void *arg)
             if (dx < 0) dx = -dx;
             if (dy < 0) dy = -dy;
 
+            const bool had_media_press =
+                s_media_pressed_index !=
+                (size_t)-1;
+
+            s_media_pressed_index =
+                (size_t)-1;
+
             if (s_menu_visible &&
                 !long_fired &&
                 dx <= TAP_MOVE_LIMIT &&
@@ -2059,12 +4399,20 @@ static void touch_task(void *arg)
                 );
             }
 
+            if (had_media_press &&
+                s_menu_visible &&
+                s_page == PAGE_MEDIA &&
+                !s_media_confirm_visible) {
+                draw_media_page();
+            }
+
             was_down = false;
             long_fired = false;
         }
 
         if (typen_thumb_cache_take_dirty()) {
-            if (s_menu_visible &&
+            if (!s_ui_animating &&
+                s_menu_visible &&
                 s_page == PAGE_MEDIA) {
                 if (s_media_confirm_visible) {
                     draw_media_confirmation();
@@ -2161,9 +4509,15 @@ esp_err_t typen_ui_init(void)
     typen_thumb_cache_set_paused(true);
 
     /*
-     * One direct draw at startup, then no redraw until the user long-presses.
+     * Preserve the original TypeN logo exactly and run one short decorative
+     * 3D flourish around it. The final idle state remains the original splash.
      */
-    draw_idle();
+    if (ui_anim_session_begin()) {
+        ui_anim_startup_flourish();
+        ui_anim_session_end();
+    } else {
+        draw_idle();
+    }
 
     if (s_touch_task == NULL) {
         BaseType_t ok = xTaskCreate(
@@ -2197,7 +4551,10 @@ void typen_ui_set_status(const char *text)
 
     snprintf(s_status, sizeof(s_status), "%s", text);
 
-    if (s_menu_visible && s_page == PAGE_SYSTEM) {
+    if (!s_ui_animating &&
+        s_menu_visible &&
+        s_page == PAGE_SYSTEM &&
+        !s_factory_reset_confirm_visible) {
         draw_system_page();
     }
 }
@@ -2210,7 +4567,10 @@ void typen_ui_set_wifi_status(const char *text)
 
     snprintf(s_wifi, sizeof(s_wifi), "%s", text);
 
-    if (s_menu_visible && s_page == PAGE_SYSTEM) {
+    if (!s_ui_animating &&
+        s_menu_visible &&
+        s_page == PAGE_SYSTEM &&
+        !s_factory_reset_confirm_visible) {
         draw_system_page();
     }
 }
@@ -2226,12 +4586,13 @@ void typen_ui_set_media_count(size_t count)
         s_media_page_index = pages - 1U;
     }
 
-    if (s_menu_visible &&
+    if (!s_ui_animating &&
+        s_menu_visible &&
         (s_page == PAGE_MEDIA ||
          s_page == PAGE_SYSTEM)) {
         if (s_page == PAGE_MEDIA) {
             draw_media_page();
-        } else {
+        } else if (!s_factory_reset_confirm_visible) {
             draw_system_page();
         }
     }
@@ -2260,7 +4621,8 @@ esp_err_t typen_ui_set_brightness(
     s_brightness =
         percent;
 
-    if (s_menu_visible &&
+    if (!s_ui_animating &&
+        s_menu_visible &&
         s_page == PAGE_DISPLAY) {
         draw_display_page();
     }
@@ -2298,15 +4660,25 @@ esp_err_t typen_ui_easter_egg_start(void)
     }
 
     /*
-     * Web activation can happen while the local menu is open. Drop the local
-     * menu state before the renderer takes over so the touch task cannot
-     * return to an invisible menu after the Easter egg exits.
+     * Web activation can happen while the local menu is open. Give the
+     * animation engine's borrowed playback framebuffer back before the misc
+     * renderer starts borrowing its own framebuffer.
+     */
+    if (s_anim.active) {
+        ui_anim_session_end();
+    }
+
+    /*
+     * Drop the local menu state before the renderer takes over so the touch
+     * task cannot return to an invisible menu after the Easter egg exits.
      */
     s_menu_visible = false;
     s_page = PAGE_HOME;
+    s_media_pressed_index = (size_t)-1;
     s_media_confirm_visible = false;
     s_media_confirm_mode =
         MEDIA_CONFIRM_SET;
+    s_factory_reset_confirm_visible = false;
 
     typen_playback_pause(true);
     typen_thumb_cache_set_paused(true);
@@ -2414,6 +4786,13 @@ esp_err_t typen_ui_show_media(
 
     if (err != ESP_OK) {
         return err;
+    }
+
+    if (s_menu_visible) {
+        ui_anim_close_to_playback();
+        close_menu();
+    } else if (s_anim.active) {
+        ui_anim_session_end();
     }
 
     return typen_playback_set(item);
