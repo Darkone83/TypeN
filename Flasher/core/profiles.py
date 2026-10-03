@@ -15,30 +15,32 @@ class DeviceProfile:
 PROFILES = [
     DeviceProfile(
         key="p4_pico",
-        title="P4 Pico",
+        title="TypeN P4 Pico",
         chip="esp32p4",
         expected_project=None,
         description=(
-            "TypeN P4 Pico profile. Full-flash layout is read from the "
-            "selected package's flasher_args.json."
+            "TypeN display using a P4 Pico with an external ESP32-C6 "
+            "Wi-Fi module."
         ),
     ),
     DeviceProfile(
         key="p4_pico_wifi",
-        title="P4 Pico WiFi",
+        title="TypeN P4 Pico WiFi",
         chip="esp32p4",
         expected_project="TypeN",
         description=(
-            "TypeN ESP32-P4 host firmware for the WiFi configuration."
+            "TypeN display using the P4 Pico WiFi with its onboard "
+            "ESP32-C6."
         ),
     ),
     DeviceProfile(
         key="c6_slave",
-        title="C6 Slave",
+        title="C6 Wi-Fi Module",
         chip="esp32c6",
         expected_project="network_adapter",
         description=(
-            "ESP32-C6 ESP-Hosted UART slave firmware."
+            "Firmware for the external ESP32-C6 Wi-Fi module used with "
+            "the TypeN P4 Pico."
         ),
     ),
 ]
