@@ -36,6 +36,15 @@
 #define TAP_MOVE_LIMIT           24
 
 /*
+ * The physical EXIT button is handled by the 4 KiB touch task. Keep the
+ * cross-subsystem Easter-egg teardown off that stack: stopping the renderer,
+ * restoring scanout/playback, and resuming playback run on this short-lived
+ * worker instead. The WebUI can continue to call the public exit API directly.
+ */
+#define MISC_EXIT_STACK        6144
+#define MISC_EXIT_PRIORITY        5
+
+/*
  * UI animation timing.
  *
  * The panel runs at ~65 Hz, so each page-flipped animation frame is held
@@ -101,6 +110,7 @@ static const char *TAG = "typen_ui";
 
 static uint16_t *s_fb = NULL;
 static TaskHandle_t s_touch_task = NULL;
+static TaskHandle_t s_misc_exit_task = NULL;
 static SemaphoreHandle_t s_misc_control_lock = NULL;
 
 static bool s_menu_visible = false;
@@ -4160,17 +4170,68 @@ static void handle_menu_tap(int x, int y)
     }
 }
 
-static void restore_after_misc(void)
+static void misc_exit_worker(void *arg)
 {
+    (void)arg;
+
     esp_err_t err =
         typen_ui_easter_egg_exit();
 
     if (err != ESP_OK) {
         ESP_LOGW(
             TAG,
-            "Easter egg exit request failed: %s",
+            "Easter egg exit worker failed: %s",
             esp_err_to_name(err)
         );
+    }
+
+    s_misc_exit_task = NULL;
+    vTaskDelete(NULL);
+}
+
+static void restore_after_misc(void)
+{
+    /*
+     * Do not perform the renderer wait + framebuffer/playback restore from
+     * typen_touch_ui. That task intentionally has a small 4 KiB stack and
+     * should remain an input dispatcher only.
+     */
+    if (s_misc_exit_task != NULL) {
+        return;
+    }
+
+    BaseType_t ok =
+        xTaskCreate(
+            misc_exit_worker,
+            "typen_misc_exit",
+            MISC_EXIT_STACK,
+            NULL,
+            MISC_EXIT_PRIORITY,
+            &s_misc_exit_task
+        );
+
+    if (ok != pdPASS) {
+        s_misc_exit_task = NULL;
+
+        ESP_LOGE(
+            TAG,
+            "Unable to create Easter egg exit worker; using synchronous fallback"
+        );
+
+        /*
+         * Resource-exhaustion fallback only. Normal physical EXIT handling
+         * always uses the worker above.
+         */
+        esp_err_t err =
+            typen_ui_easter_egg_exit();
+
+        if (err != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Easter egg synchronous exit fallback failed: %s",
+                esp_err_to_name(err)
+            );
+        }
     }
 }
 
