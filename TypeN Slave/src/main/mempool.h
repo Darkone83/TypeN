@@ -24,7 +24,7 @@
 #include <freertos/portmacro.h>
 
 #ifdef CONFIG_ESP_CACHE_MALLOC
-#include "mempool_ll.h"
+#include "os/os.h"
 struct hosted_mempool {
 	struct os_mempool *pool;
 	uint8_t *heap;

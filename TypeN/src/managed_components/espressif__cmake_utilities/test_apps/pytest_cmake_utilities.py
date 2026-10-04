@@ -1,5 +1,3 @@
-# SPDX-FileCopyrightText: 2023 Espressif Systems (Shanghai) CO LTD
-# SPDX-License-Identifier: Apache-2.0
 '''
 Steps to run these cases:
 - Build
@@ -11,13 +9,12 @@ Steps to run these cases:
   - pytest tools/cmake_utilities/test_apps --target esp32s2
 '''
 
-import pytest, time
+import pytest
 from pytest_embedded import Dut
 
 @pytest.mark.target('esp32s3')
 @pytest.mark.env('generic')
 def test_cmake_utilities(dut: Dut)-> None:
     dut.expect_exact('Press ENTER to see the list of tests.')
-    time.sleep(0.1)
     dut.write('*')
     dut.expect_unity_test_output(timeout = 1000)

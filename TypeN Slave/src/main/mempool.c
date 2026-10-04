@@ -119,7 +119,7 @@ void * hosted_mempool_alloc(struct hosted_mempool *mempool,
 	if (!mempool)
 		return NULL;
 
-#if MYNEWT_VAL(OS_MEMPOOL_CHECK)
+#if defined(MYNEWT_VAL_OS_MEMPOOL_CHECK) && MYNEWT_VAL_OS_MEMPOOL_CHECK
 	assert(mempool->heap);
 	assert(mempool->pool);
 
@@ -148,7 +148,7 @@ int hosted_mempool_free(struct hosted_mempool *mempool, void *mem)
 	if (!mempool)
 		return MEMPOOL_FAIL;
 
-#if MYNEWT_VAL(OS_MEMPOOL_CHECK)
+#if defined(MYNEWT_VAL_OS_MEMPOOL_CHECK) && MYNEWT_VAL_OS_MEMPOOL_CHECK
 	assert(mempool->heap);
 	assert(mempool->pool);
 #endif

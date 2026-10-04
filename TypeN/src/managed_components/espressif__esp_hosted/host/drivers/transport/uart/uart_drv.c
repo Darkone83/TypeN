@@ -368,72 +368,6 @@ static int is_valid_uart_rx_packet(uint8_t *rxbuff_a, uint16_t *len_a, uint16_t 
 
 static uint8_t * uart_scratch_buf = NULL;
 
-/*
- * UART is a byte stream. ESP-Hosted 1.4.7 assumes every read starts exactly
- * on a frame boundary; one stray byte can therefore leave the parser
- * permanently misaligned. Read a complete header and, when it is not sane,
- * slide the header window one byte at a time until a valid boundary is found.
- */
-static int h_uart_read_exact(uint8_t *dst, uint16_t len)
-{
-	uint16_t total = 0;
-
-	while (total < len) {
-		int ret = g_h.funcs->_h_uart_read(uart_handle, dst + total, len - total);
-		if (ret <= 0) {
-			return ESP_FAIL;
-		}
-		total += (uint16_t)ret;
-	}
-
-	return total;
-}
-
-static int h_uart_header_sane(const uint8_t *buf)
-{
-	const struct esp_payload_header *h = (const struct esp_payload_header *)buf;
-	const uint16_t len = le16toh(h->len);
-	const uint16_t offset = le16toh(h->offset);
-
-	if (offset != sizeof(struct esp_payload_header)) {
-		return 0;
-	}
-
-	if (len > MAX_PAYLOAD_SIZE) {
-		return 0;
-	}
-
-	if (((uint32_t)offset + (uint32_t)len) > MAX_UART_BUFFER_SIZE) {
-		return 0;
-	}
-
-	return 1;
-}
-
-static int h_uart_read_synced_header(uint8_t *buf)
-{
-	const uint16_t header_len = sizeof(struct esp_payload_header);
-	uint32_t dropped = 0;
-
-	if (h_uart_read_exact(buf, header_len) != header_len) {
-		return ESP_FAIL;
-	}
-
-	while (!h_uart_header_sane(buf)) {
-		memmove(buf, buf + 1, header_len - 1);
-		if (h_uart_read_exact(buf + header_len - 1, 1) != 1) {
-			return ESP_FAIL;
-		}
-		dropped++;
-	}
-
-	if (dropped) {
-		ESP_LOGW(TAG, "UART RX resynchronized after dropping %" PRIu32 " byte(s)", dropped);
-	}
-
-	return header_len;
-}
-
 static void h_uart_read_task(void const* pvParameters)
 {
 	struct esp_payload_header *header = NULL;
@@ -463,25 +397,29 @@ static void h_uart_read_task(void const* pvParameters)
 	header = (struct esp_payload_header *)uart_scratch_buf;
 
 	while (1) {
-		/* Find a real ESP-Hosted frame boundary before trusting len/offset. */
-		bytes_read = h_uart_read_synced_header(uart_scratch_buf);
-		if (bytes_read != sizeof(struct esp_payload_header)) {
-			ESP_LOGE(TAG, "Failed to synchronize UART header");
+		// get the header
+		bytes_read = g_h.funcs->_h_uart_read(uart_handle, uart_scratch_buf,
+				sizeof(struct esp_payload_header));
+		ESP_LOGD(TAG, "Read %d bytes (header)", bytes_read);
+		if (bytes_read < sizeof(struct esp_payload_header)) {
+			ESP_LOGE(TAG, "Failed to read header");
 			continue;
 		}
 
 		len = le16toh(header->len);
 		offset = le16toh(header->offset);
-		total_len = (int)offset + (int)len;
+		total_len = len + sizeof(struct esp_payload_header);
+		if (total_len > MAX_UART_BUFFER_SIZE) {
+			ESP_LOGE(TAG, "incoming data too big: %d", total_len);
+			continue;
+		}
 
-		/* Header sanity was checked before using offset as a destination. */
-		if (len) {
-			bytes_read = h_uart_read_exact(&uart_scratch_buf[offset], len);
-			ESP_LOGD(TAG, "Read %d bytes (payload)", bytes_read);
-			if (bytes_read != len) {
-				ESP_LOGE(TAG, "Failed to read payload");
-				continue;
-			}
+		// get the data
+		bytes_read = g_h.funcs->_h_uart_read(uart_handle, &uart_scratch_buf[offset], len);
+		ESP_LOGD(TAG, "Read %d bytes (payload)", bytes_read);
+		if (bytes_read < len) {
+			ESP_LOGE(TAG, "Failed to read payload");
+			continue;
 		}
 
 		rxbuff = h_uart_buffer_alloc(MEMSET_REQUIRED);

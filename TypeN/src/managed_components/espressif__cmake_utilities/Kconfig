@@ -1,5 +1,5 @@
 menu "CMake Utilities"
-
+    
     config CU_RELINKER_ENABLE
         bool "Enable relinker"
         default n
@@ -13,17 +13,6 @@ menu "CMake Utilities"
             help
                 "Enable this option to print error information instead of
                     throwing exception when missing function"
-
-        config CU_RELINKER_LINK_SPECIFIC_FUNCTIONS_TO_IRAM
-            bool "Link specific functions to IRAM regardless of ESP-IDF's behavior"
-            default n
-            depends on SPI_FLASH_AUTO_SUSPEND
-            help
-                "Enable this option, although functions' attribution
-                are IRAM_ATTR, or configured to be noflash by link.lf, they will
-                not be linked into IRAM. Only functions specified by relinker
-                configuration file will be linked into IRAM."
-
 
         config CU_RELINKER_ENABLE_CUSTOMIZED_CONFIGURATION_FILES
             bool "Enable customized relinker configuration files"
@@ -65,7 +54,7 @@ menu "CMake Utilities"
         help
             "Enable this option, users can enable GCC link time optimization(LTO)
              feature for target components or dependencies.
-
+    
     config CU_GCC_STRING_1BYTE_ALIGN
         bool "GCC string 1-byte align"
         default n

@@ -13,6 +13,7 @@
 #include "test_component1.h"
 #include "test_component2.h"
 
+
 /* USB PIN fixed in esp32-s2, can not use io matrix */
 #define TEST_MEMORY_LEAK_THRESHOLD (-400)
 
