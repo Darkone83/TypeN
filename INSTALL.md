@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- ESP-IDF 5.5.1
+- ESP-IDF 5.5.5
 - ESP32-P4 TypeN hardware
 - external ESP32-C6 with matching ESP-Hosted slave firmware
 - microSD card
