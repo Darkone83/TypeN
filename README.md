@@ -140,12 +140,10 @@ Do not mix the UART slave firmware/configuration with the onboard SDIO variant.
 
 ## Software requirements
 
-- **ESP-IDF 5.5.1**
+- **ESP-IDF 5.5.5**
 - ESP32-P4 toolchain
 - Matching ESP32-C6 slave firmware for the selected hardware variant
 - `simplewebp.h` in `main/webp/` for native static WebP decoding
-
-TypeN intentionally stays on ESP-IDF 5.5.1 for the current hardware/software baseline.
 
 Static WebP support uses the lightweight [SimpleWebP](https://github.com/MikuAuahDark/simplewebp) decoder. The current TypeN integration pins the decoder to commit `d1a728a1f8ec7348ca2a5039b6dd813b83986fbb`.
 
@@ -153,7 +151,7 @@ Static WebP support uses the lightweight [SimpleWebP](https://github.com/MikuAua
 
 ## Building
 
-From an ESP-IDF 5.5.1 environment:
+From an ESP-IDF 5.5.5 environment:
 
 ```bash
 idf.py set-target esp32p4
