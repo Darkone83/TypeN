@@ -17,7 +17,6 @@
 #include <inttypes.h>
 
 #include "esp_wifi.h"
-#include "esp_err.h"
 #include "transport_drv.h"
 #include "esp_hosted_transport.h"
 #include "esp_hosted_transport_init.h"
@@ -32,10 +31,6 @@
 #include "stats.h"
 #include "errno.h"
 #include "hci_drv.h"
-
-#if CONFIG_ESP_HOSTED_UART_HOST_INTERFACE
-#include "driver/uart.h"
-#endif
 
 /**
  * @brief  Slave capabilities are parsed
@@ -83,24 +78,8 @@ static void reset_slave(void)
 	g_h.funcs->_h_msleep(50);
 	g_h.funcs->_h_write_gpio(reset_pin.port, reset_pin.pin, H_RESET_VAL_ACTIVE);
 
-#if CONFIG_ESP_HOSTED_UART_HOST_INTERFACE
-	/*
-	 * UART can contain stale/partial bytes while the C6 is held in reset.
-	 * ESP-Hosted 1.4.7 does not clear them here, so the RX task can start
-	 * mid-frame and interpret garbage as a huge payload length.
-	 */
-	esp_err_t uart_err = uart_flush_input(CONFIG_ESP_HOSTED_UART_PORT);
-	if (uart_err != ESP_OK) {
-		ESP_LOGW(TAG, "Failed to flush Hosted UART RX after slave reset: %s",
-				esp_err_to_name(uart_err));
-	}
-
-	/* C6 boot/Hosted initialization settle; keep this modest. */
-	g_h.funcs->_h_msleep(400);
-#else
-	/* Original 1.4.7 behavior for the non-UART transports. */
+	/* stop spi transactions short time to avoid slave sync issues */
 	g_h.funcs->_h_sleep(1);
-#endif
 }
 
 static void transport_driver_event_handler(uint8_t event)
@@ -151,12 +130,7 @@ esp_err_t transport_drv_reconfigure(void)
 		while (!is_transport_tx_ready()) {
 			if (retry_slave_connection < MAX_RETRY_TRANSPORT_ACTIVE) {
 				retry_slave_connection++;
-#if CONFIG_ESP_HOSTED_UART_HOST_INTERFACE
-				/* 80 x 25 ms ~= 2 s before a hard C6 reset/resync. */
-				if ((retry_slave_connection % 80) == 0) {
-#else
-				if ((retry_slave_connection % 10) == 0) {
-#endif
+				if (retry_slave_connection%10==0) {
 					ESP_LOGE(TAG, "Not able to connect with ESP-Hosted slave device");
 					reset_slave();
 				}
@@ -164,11 +138,7 @@ esp_err_t transport_drv_reconfigure(void)
 				ESP_LOGE(TAG, "Failed to get ESP_Hosted slave transport up");
 				return ESP_FAIL;
 			}
-#if CONFIG_ESP_HOSTED_UART_HOST_INTERFACE
-			g_h.funcs->_h_msleep(25);
-#else
 			g_h.funcs->_h_sleep(1);
-#endif
 		}
 	} else {
 		ESP_LOGI(TAG, "Transport is already up");
