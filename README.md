@@ -38,6 +38,22 @@ The project is designed around a simple goal: load media onto the device, choose
 
 ---
 
+
+### 🌐 TypeN Web Flasher
+
+Install or update TypeN firmware directly from your browser.
+No Python, drivers from the installer, or additional software setup required.
+
+**[🚀 Launch TypeN Web Flasher](https://darkone83.github.io/TypeN/webflasher/)**
+
+Supports:
+- TypeN P4 Pico
+- TypeN P4 Pico WiFi
+- TypeN C6 Slave
+
+Requires Chrome or Edge on a desktop computer with USB access.
+
+
 ## Hardware
 
 TypeN targets the ESP32-P4 platform and the 800×800 JD9365 round display used by the Waveshare P4 ecosystem.
