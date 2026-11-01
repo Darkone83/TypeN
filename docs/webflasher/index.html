@@ -8,7 +8,7 @@
   <title>TypeN | Web Firmware Installer</title>
   <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="./assets/style.css">
-  <script defer src="./assets/app.js"></script>
+  <script defer src="./assets/app.js?v=2"></script>
   <!-- ESP Web Tools handles the USB permission prompt, chip verification, flash progress and reset. -->
   <script type="module" src="https://unpkg.com/esp-web-tools@10.4.0/dist/web/install-button.js?module"></script>
 </head>
@@ -107,6 +107,8 @@
               <p class="helper-note"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="10" r="8"/><path d="M10 9v5m0-8v1" stroke-linecap="round"/></svg> Your browser asks permission before accessing a USB serial port.</p>
             </div>
             <p class="loading-note" id="select-prompt" role="status">Select a hardware card to enable installation.</p>
+            <div id="firmware-preflight" class="loading-note" hidden role="status" aria-live="polite"></div>
+            <button id="firmware-retry" type="button" class="preflight-retry" hidden>Recheck firmware files</button>
             <div id="compat-notice" class="compat-notice" hidden role="status"></div>
           </div>
           <aside class="install-aside">
@@ -118,7 +120,7 @@
               <div><dt>Flash capacity</dt><dd id="detail-size">—</dd></div>
               <div><dt>Image size</dt><dd id="detail-image-size">—</dd></div>
             </dl>
-            <div class="warning-note"><strong>Fresh install / recovery</strong><p>This writes a full firmware image and may erase saved settings, OTA slots and other data in onboard flash. Files on the removable SD card are not targeted.</p></div>
+            <div class="warning-note"><strong>Fresh install / recovery</strong><p>This installs the bootloader, partition table, OTA metadata and application at their intended addresses. The installer offers a full-erase option; selecting it deletes settings and OTA data in onboard flash. Files on the removable SD card are not targeted.</p></div>
             <p class="aside-caption">For regular updates on a working TypeN, use its own local <strong>Firmware Update</strong> page instead.</p>
           </aside>
         </div>
@@ -133,6 +135,7 @@
       <section class="help-section" aria-labelledby="help-heading">
         <div class="section-heading"><div><span class="step-label">SUPPORT</span><h2 id="help-heading">Need a hand?</h2><p>A few common fixes before trying again.</p></div></div>
         <div class="faq-grid">
+          <details><summary>Installer says “Failed to install”</summary><p>First check that the firmware status above reads <strong>Firmware ready</strong>. If firmware files pass verification, the problem is most likely in USB serial communication, boot/download mode, or the flash operation. Close other serial monitors, retry in Chrome or Edge, and enter download mode using <strong>BOOT + RESET</strong> if necessary. If it still fails, capture the complete error shown by the installer (including any details), not just the “Failed to install” heading.</p></details>
           <details><summary>The device is not listed in the serial port picker</summary><p>Use a USB <strong>data</strong> cable, close serial monitors and other applications using the port, and try another USB port. On boards that do not auto-enter download mode, hold <strong>BOOT</strong>, tap <strong>RESET</strong>, then release BOOT before retrying. Some USB-to-serial adapters need a manufacturer driver.</p></details>
           <details><summary>Can I use Safari, Firefox, or an iPhone?</summary><p>This installer is intended for desktop Chrome or Microsoft Edge with Web Serial enabled. Safari and iOS browsers do not provide the required USB serial access. Internet access is needed to load the installer and firmware.</p></details>
           <details><summary>Which P4 variant do I select?</summary><p>Choose <strong>P4 Pico</strong> if your P4 uses a separately wired ESP32-C6 Zero over UART. Choose <strong>P4 Pico WiFi</strong> if the C6 is already on your P4 board and connected through SDIO. Both identify as ESP32-P4, so the browser cannot distinguish them automatically.</p></details>

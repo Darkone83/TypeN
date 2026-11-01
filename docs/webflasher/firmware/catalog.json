@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "firmwares": [
     {
       "key": "p4-pico",
@@ -10,11 +10,36 @@
       "idf": "v5.5.5",
       "flash_size": "32MB",
       "app_offset": "0x20000",
-      "image_size": 1337888,
-      "image_sha256": "8ff3c01c3739f1e28cee7d134ba26639173efc337b4f5e5037f256cb7de8ff65",
+      "image_size": 1241952,
       "source_application": "TypeN/firmware/TypeN.bin",
       "partition": "factory",
-      "manifest": "./firmware/p4-pico/manifest.json"
+      "manifest": "./firmware/p4-pico/manifest.json",
+      "files": [
+        {
+          "path": "bootloader.bin",
+          "offset": 8192,
+          "size": 23872,
+          "sha256": "9eadd37ea60e42472bfe9094d1ccf56fbafe00feae6e840caa53072c16870957"
+        },
+        {
+          "path": "partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "cc35930ab20896cf086f9c3cfcc794631861b18b0762e9e3355182f042e71863"
+        },
+        {
+          "path": "ota-data.bin",
+          "offset": 65536,
+          "size": 8192,
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+        },
+        {
+          "path": "app.bin",
+          "offset": 131072,
+          "size": 1206816,
+          "sha256": "c13a0d0845fdfcdfc12c185abb51e225d25bddbd9f5770e8b1ec087a6d60ea5d"
+        }
+      ]
     },
     {
       "key": "p4-pico-wifi",
@@ -25,11 +50,36 @@
       "idf": "v5.5.5",
       "flash_size": "32MB",
       "app_offset": "0x20000",
-      "image_size": 1326976,
-      "image_sha256": "d17435982b3720dfbe38854e1b6f41e0e77f1a22d4e9f26934a0e2d082c2f68a",
+      "image_size": 1231040,
       "source_application": "TypeN_WiFi/firmware/TypeN.bin",
       "partition": "factory",
-      "manifest": "./firmware/p4-pico-wifi/manifest.json"
+      "manifest": "./firmware/p4-pico-wifi/manifest.json",
+      "files": [
+        {
+          "path": "bootloader.bin",
+          "offset": 8192,
+          "size": 23872,
+          "sha256": "d6036fa148a661faf2888f18d1404ef34194354fd48e8b3d7fb7d9fb7013b454"
+        },
+        {
+          "path": "partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "cc35930ab20896cf086f9c3cfcc794631861b18b0762e9e3355182f042e71863"
+        },
+        {
+          "path": "ota-data.bin",
+          "offset": 65536,
+          "size": 8192,
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+        },
+        {
+          "path": "app.bin",
+          "offset": 131072,
+          "size": 1195904,
+          "sha256": "6a51b2f2f65c48b8e8bcd3ec02866d6563d8a24ce9ae05acac223bb3754d3e76"
+        }
+      ]
     },
     {
       "key": "c6-external",
@@ -40,11 +90,36 @@
       "idf": "v5.5.5",
       "flash_size": "4MB",
       "app_offset": "0x10000",
-      "image_size": 1227744,
-      "image_sha256": "812a7c85d408509880327b78e5e4755cbcb8ba4b3ae9dbb4935cb68da90c5f79",
+      "image_size": 1197408,
       "source_application": "TypeN Slave/firmware/network_adapter.bin",
       "partition": "ota_0",
-      "manifest": "./firmware/c6-external/manifest.json"
+      "manifest": "./firmware/c6-external/manifest.json",
+      "files": [
+        {
+          "path": "bootloader.bin",
+          "offset": 0,
+          "size": 23936,
+          "sha256": "4e5af199fa80626a71ee628345b6dc27e1433899c8ed1e3775a80698a74c0659"
+        },
+        {
+          "path": "partition-table.bin",
+          "offset": 32768,
+          "size": 3072,
+          "sha256": "0241fa0d2e573dee86756e39fb4181e61ff7218087619cab565b602df55954d6"
+        },
+        {
+          "path": "ota-data.bin",
+          "offset": 53248,
+          "size": 8192,
+          "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+        },
+        {
+          "path": "app.bin",
+          "offset": 65536,
+          "size": 1162208,
+          "sha256": "16a354ede679d8cd7fb7c393897d994cf3b530d0c56a6533032fab4df4c143c1"
+        }
+      ]
     }
   ]
 }

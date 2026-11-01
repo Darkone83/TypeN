@@ -26,3 +26,13 @@ This USB recovery/full install may erase onboard settings and OTA state. For reg
 The static site depends on `esp-web-tools@10.4.0` loaded over the internet; no Python, pip, build system, or npm is required for users. A browser with Web Serial and HTTPS is required. This bundle includes the complete firmware binaries for all three targets.
 
 The developer ZIP includes the standard-library-only script used to rebuild the site firmware and manifests from a future TypeN release ZIP.
+
+
+## Repair package (v2)
+
+- The flasher now flashes 4 independently addressed original segments per target.
+- The bootloader bytes carry the flash header already patched for DIO, 80MHz and the correct physical flash size.
+- The page downloads and hashes each published image before enabling the Install button.
+- If the firmware checks pass and ESP Web Tools says *Failed to install*, copy the **complete error message** in its dialog and verify the selected serial port and BOOT/RESET mode.
+- Replace the **entire** `docs/webflasher` directory to avoid stale binaries, `catalog.json` or manifests.
+- Use Ctrl+Shift+R on the deployed page after publishing.

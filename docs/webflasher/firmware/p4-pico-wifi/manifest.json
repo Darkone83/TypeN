@@ -1,15 +1,27 @@
 {
   "name": "TypeN P4 Pico WiFi",
   "version": "1.0.0+sdio.abi1",
-  "new_install_prompt_erase": false,
+  "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32-P4",
       "improv": false,
       "parts": [
         {
-          "path": "full-install.bin",
-          "offset": 0
+          "path": "bootloader.bin",
+          "offset": 8192
+        },
+        {
+          "path": "partition-table.bin",
+          "offset": 32768
+        },
+        {
+          "path": "ota-data.bin",
+          "offset": 65536
+        },
+        {
+          "path": "app.bin",
+          "offset": 131072
         }
       ]
     }
