@@ -1,0 +1,17 @@
+{
+  "name": "TypeN P4 Pico",
+  "version": "1.0.0+uart.abi1",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-P4",
+      "improv": false,
+      "parts": [
+        {
+          "path": "full-install.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

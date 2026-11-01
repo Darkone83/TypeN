@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "firmwares": [
+    {
+      "key": "p4-pico",
+      "title": "TypeN P4 Pico",
+      "chip": "ESP32-P4",
+      "version": "1.0.0+uart.abi1",
+      "build_date": "Oct  3 2026 19:01:30",
+      "idf": "v5.5.5",
+      "flash_size": "32MB",
+      "app_offset": "0x20000",
+      "image_size": 1337888,
+      "image_sha256": "8ff3c01c3739f1e28cee7d134ba26639173efc337b4f5e5037f256cb7de8ff65",
+      "source_application": "TypeN/firmware/TypeN.bin",
+      "partition": "factory",
+      "manifest": "./firmware/p4-pico/manifest.json"
+    },
+    {
+      "key": "p4-pico-wifi",
+      "title": "TypeN P4 Pico WiFi",
+      "chip": "ESP32-P4",
+      "version": "1.0.0+sdio.abi1",
+      "build_date": "Oct  3 2026 18:37:31",
+      "idf": "v5.5.5",
+      "flash_size": "32MB",
+      "app_offset": "0x20000",
+      "image_size": 1326976,
+      "image_sha256": "d17435982b3720dfbe38854e1b6f41e0e77f1a22d4e9f26934a0e2d082c2f68a",
+      "source_application": "TypeN_WiFi/firmware/TypeN.bin",
+      "partition": "factory",
+      "manifest": "./firmware/p4-pico-wifi/manifest.json"
+    },
+    {
+      "key": "c6-external",
+      "title": "TypeN External C6 Slave",
+      "chip": "ESP32-C6",
+      "version": "1",
+      "build_date": "Oct  3 2026 19:10:13",
+      "idf": "v5.5.5",
+      "flash_size": "4MB",
+      "app_offset": "0x10000",
+      "image_size": 1227744,
+      "image_sha256": "812a7c85d408509880327b78e5e4755cbcb8ba4b3ae9dbb4935cb68da90c5f79",
+      "source_application": "TypeN Slave/firmware/network_adapter.bin",
+      "partition": "ota_0",
+      "manifest": "./firmware/c6-external/manifest.json"
+    }
+  ]
+}

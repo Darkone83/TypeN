@@ -1,0 +1,17 @@
+{
+  "name": "TypeN External C6 Slave",
+  "version": "1",
+  "new_install_prompt_erase": false,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "improv": false,
+      "parts": [
+        {
+          "path": "full-install.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}
