@@ -31,3 +31,20 @@ h1{font-size:clamp(45px,5vw,70px);font-weight:800;line-height:1.08;letter-spacin
 #firmware-preflight.error-text{border-color:rgba(255,182,135,.35);color:#ffcbac}
 .preflight-retry{display:block;margin-top:9px;border:1px solid rgba(74,215,216,.4);border-radius:8px;background:rgba(37,122,138,.12);color:#b6e7eb;padding:9px 13px;cursor:pointer;font-size:12px;font-weight:650}
 .preflight-retry[hidden],#firmware-preflight[hidden]{display:none}
+
+/* Direct browser flasher status, progress and diagnostics */
+.flash-status { margin-top: 14px; border-radius: 10px; padding: 13px 16px; background: #162b3c; color: #bde8fa; line-height: 1.55; border: 1px solid #31536c; }
+.flash-status-success { background: #102c27; color: #a7f6d5; border-color: #2b6958; }
+.flash-status-error { background: #341e2b; color: #ffd2dc; border-color: #785061; }
+.flash-progress-panel { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; color: #b5c7d6; font-size: 13px; }
+.flash-progress-panel progress { display: block; width: 100%; height: 13px; appearance: none; border: 0; border-radius: 10px; overflow: hidden; background: #192c3f; }
+.flash-progress-panel progress::-webkit-progress-bar { background: #192c3f; }
+.flash-progress-panel progress::-webkit-progress-value { background: #53c3cf; border-radius: 10px; }
+.flash-progress-panel progress::-moz-progress-bar { background: #53c3cf; border-radius: 10px; }
+.diagnostic-panel { margin-top: 18px; border: 1px solid #2b3c50; border-radius: 11px; padding: 12px 14px; background: #0d1b2a; }
+.diagnostic-panel summary { cursor: pointer; color: #bed9e6; font-size: 13px; font-weight: 650; }
+.diag-note { color: #9bb1c3; font-size: 12px; line-height: 1.5; margin-top: 12px; }
+.diagnostic-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #070d17; color: #c9e4e6; font: 12px/1.5 Consolas, Monaco, monospace; border: 1px solid #24374a; padding: 12px; max-height: 235px; overflow: auto; border-radius: 8px; }
+.diagnostic-panel button { margin-top: 10px; }
+
+.flash-progress-panel[hidden], .flash-status[hidden], .diagnostic-panel[hidden] { display: none !important; }
