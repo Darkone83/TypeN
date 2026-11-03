@@ -15,6 +15,7 @@
 #include "typen_playback.h"
 #include "typen_ui_misc.h"
 #include "typen_ui_misc_data.h"
+#include "typen_ui_misc_nacho_data.h"
 
 #define MISC_FRAME_MS              50
 #define MISC_TASK_STACK          8192
@@ -25,6 +26,15 @@
 #define MISC_CAMERA_DISTANCE    18.0f
 #define MISC_FOCAL_LENGTH      900.0f
 #define MISC_TWO_PI             6.28318530718f
+
+/* Two wireframe logos, each displayed for about 14 seconds at 20 FPS. */
+#define MISC_LOGO_FRAMES           280U
+#define MISC_FADE_FRAMES           4U
+
+/* The original projected vertex scratch allocation must fit both models. */
+#if TYPEN_NACHO_VERTEX_COUNT > TYPEN_UI_MISC_VERTEX_COUNT
+#error "Increase projected-vertex allocation for the larger Nacho model"
+#endif
 
 #define EXIT_X                     320
 #define EXIT_Y                     714
@@ -416,6 +426,38 @@ static void draw_line(
     }
 }
 
+/* Software RGB565 brightness, computed only for palette entries once per frame. */
+static uint16_t scale_rgb565(uint16_t color, uint8_t level)
+{
+    if (level == 255U) {
+        return color;
+    }
+
+    uint32_t r = ((uint32_t)((color >> 11) & 31U) * level + 127U) / 255U;
+    uint32_t g = ((uint32_t)((color >> 5) & 63U) * level + 127U) / 255U;
+    uint32_t b = ((uint32_t)(color & 31U) * level + 127U) / 255U;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static uint16_t lighten_rgb565(uint16_t color)
+{
+    uint32_t r = (color >> 11) & 31U;
+    uint32_t g = (color >> 5) & 63U;
+    uint32_t b = color & 31U;
+    r += (31U - r) / 4U;
+    g += (63U - g) / 4U;
+    b += (31U - b) / 4U;
+    return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+typedef struct {
+    uint16_t outer;
+    uint16_t inner;
+    uint16_t far;
+    uint16_t mid;
+    uint16_t near;
+} wire_palette_t;
+
 static uint16_t depth_color(
     int depth)
 {
@@ -436,7 +478,9 @@ static uint16_t depth_color(
 
 static void project_vertices(
     projected_vertex_t *projected,
-    float angle)
+    float angle,
+    const typen_ui_misc_vertex_t *vertices,
+    size_t vertex_count)
 {
     const float sy = sinf(angle);
     const float cy = cosf(angle);
@@ -450,10 +494,10 @@ static void project_vertices(
     const float cx = cosf(tilt);
 
     for (size_t i = 0;
-         i < TYPEN_UI_MISC_VERTEX_COUNT;
+         i < vertex_count;
          ++i) {
         const typen_ui_misc_vertex_t *v =
-            &s_typen_ui_misc_vertices[i];
+            &vertices[i];
 
         const float x =
             (float)v->x /
@@ -529,8 +573,12 @@ static void project_vertices(
 
 static void draw_wireframe(
     uint16_t *fb,
-    const projected_vertex_t *p)
+    const projected_vertex_t *p,
+    uint8_t fade)
 {
+    /* At fade=255 these are bit-identical to the original Darkone83 palette. */
+    const uint16_t outer = scale_rgb565(C_GLOW_OUTER, fade);
+    const uint16_t inner = scale_rgb565(C_GLOW_INNER, fade);
     /*
      * Halo first. The bright core is drawn afterward so overlapping halo
      * pixels never dull the actual wireframe.
@@ -557,7 +605,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             -2, 0,
-            C_GLOW_OUTER
+            outer
         );
 
         draw_line(
@@ -565,7 +613,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             2, 0,
-            C_GLOW_OUTER
+            outer
         );
 
         draw_line(
@@ -573,7 +621,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             0, -2,
-            C_GLOW_OUTER
+            outer
         );
 
         draw_line(
@@ -581,7 +629,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             0, 2,
-            C_GLOW_OUTER
+            outer
         );
 
         draw_line(
@@ -589,7 +637,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             -1, 0,
-            C_GLOW_INNER
+            inner
         );
 
         draw_line(
@@ -597,7 +645,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             1, 0,
-            C_GLOW_INNER
+            inner
         );
 
         draw_line(
@@ -605,7 +653,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             0, -1,
-            C_GLOW_INNER
+            inner
         );
 
         draw_line(
@@ -613,7 +661,7 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             0, 1,
-            C_GLOW_INNER
+            inner
         );
     }
 
@@ -644,8 +692,78 @@ static void draw_wireframe(
             a->x, a->y,
             b->x, b->y,
             0, 0,
-            depth_color(depth)
+            scale_rgb565(depth_color(depth), fade)
         );
+    }
+}
+
+/* The Macho Nacho mesh uses the same projector and software line renderer.
+ * Each edge has an explicit color group from the supplied Nacho.png artwork. */
+static void draw_nacho_wireframe(
+    uint16_t *fb,
+    const projected_vertex_t *p,
+    uint8_t fade)
+{
+    static const uint16_t logo_colors[TYPEN_NACHO_PALETTE_COUNT] = {
+        0xF9B1, /* Pink 'Nacho' lettering */
+        0xFFA9, /* Cheese yellow */
+        0xFCC4, /* Cheese orange */
+        0xFE2E, /* Tortilla gold */
+        0xDE5F  /* Ink outlines -> lavender neon on black */
+    };
+
+    wire_palette_t colors[TYPEN_NACHO_PALETTE_COUNT];
+    for (size_t i = 0; i < TYPEN_NACHO_PALETTE_COUNT; ++i) {
+        /* The ink outline group is intentionally less bright. */
+        const uint16_t base =
+            scale_rgb565(logo_colors[i], i == 4U ? 165U : 255U);
+        colors[i].outer = scale_rgb565(scale_rgb565(base, 46U), fade);
+        colors[i].inner = scale_rgb565(scale_rgb565(base, 98U), fade);
+        colors[i].far   = scale_rgb565(scale_rgb565(base, 145U), fade);
+        colors[i].mid   = scale_rgb565(scale_rgb565(base, 218U), fade);
+        colors[i].near  = scale_rgb565(lighten_rgb565(base), fade);
+    }
+
+    /* Halo first, same eight-offset passes as the existing wireframe. */
+    for (size_t i = 0; i < TYPEN_NACHO_EDGE_COUNT; ++i) {
+        const typen_nacho_edge_t *edge = &s_typen_nacho_edges[i];
+        if (edge->color >= TYPEN_NACHO_PALETTE_COUNT) {
+            continue;
+        }
+        const projected_vertex_t *a = &p[edge->a];
+        const projected_vertex_t *b = &p[edge->b];
+        if (!a->valid || !b->valid) {
+            continue;
+        }
+
+        const wire_palette_t *c = &colors[edge->color];
+        draw_line(fb, a->x, a->y, b->x, b->y, -2,  0, c->outer);
+        draw_line(fb, a->x, a->y, b->x, b->y,  2,  0, c->outer);
+        draw_line(fb, a->x, a->y, b->x, b->y,  0, -2, c->outer);
+        draw_line(fb, a->x, a->y, b->x, b->y,  0,  2, c->outer);
+        draw_line(fb, a->x, a->y, b->x, b->y, -1,  0, c->inner);
+        draw_line(fb, a->x, a->y, b->x, b->y,  1,  0, c->inner);
+        draw_line(fb, a->x, a->y, b->x, b->y,  0, -1, c->inner);
+        draw_line(fb, a->x, a->y, b->x, b->y,  0,  1, c->inner);
+    }
+
+    /* Core is drawn last so the halo cannot obscure thin lettering. */
+    for (size_t i = 0; i < TYPEN_NACHO_EDGE_COUNT; ++i) {
+        const typen_nacho_edge_t *edge = &s_typen_nacho_edges[i];
+        if (edge->color >= TYPEN_NACHO_PALETTE_COUNT) {
+            continue;
+        }
+        const projected_vertex_t *a = &p[edge->a];
+        const projected_vertex_t *b = &p[edge->b];
+        if (!a->valid || !b->valid) {
+            continue;
+        }
+
+        const wire_palette_t *c = &colors[edge->color];
+        const int depth = ((int)a->depth + (int)b->depth) / 2;
+        const uint16_t color = depth < -350 ? c->near :
+                               depth >  350 ? c->far : c->mid;
+        draw_line(fb, a->x, a->y, b->x, b->y, 0, 0, color);
     }
 }
 
@@ -740,6 +858,7 @@ static void misc_task(
 
     uint16_t *displayed_fb = NULL;
     float angle = 0.0f;
+    uint32_t logo_tick = 0U;
 
     ESP_LOGI(
         TAG,
@@ -758,15 +877,30 @@ static void misc_task(
             fb_bytes
         );
 
+        const uint32_t frame_in_logo = logo_tick % MISC_LOGO_FRAMES;
+        const bool show_nacho =
+            ((logo_tick / MISC_LOGO_FRAMES) & 1U) != 0U;
+
+        uint8_t fade = 255U;
+        if (frame_in_logo < MISC_FADE_FRAMES) {
+            fade = (uint8_t)(frame_in_logo * 255U / MISC_FADE_FRAMES);
+        } else if (frame_in_logo >= MISC_LOGO_FRAMES - MISC_FADE_FRAMES) {
+            fade = (uint8_t)((MISC_LOGO_FRAMES - frame_in_logo) *
+                             255U / MISC_FADE_FRAMES);
+        }
+
         project_vertices(
             projected,
-            angle
+            angle,
+            show_nacho ? s_typen_nacho_vertices : s_typen_ui_misc_vertices,
+            show_nacho ? TYPEN_NACHO_VERTEX_COUNT : TYPEN_UI_MISC_VERTEX_COUNT
         );
 
-        draw_wireframe(
-            fb,
-            projected
-        );
+        if (show_nacho) {
+            draw_nacho_wireframe(fb, projected, fade);
+        } else {
+            draw_wireframe(fb, projected, fade);
+        }
 
         draw_exit_button(
             fb
@@ -792,6 +926,10 @@ static void misc_task(
 
         if (angle >= MISC_TWO_PI) {
             angle -= MISC_TWO_PI;
+        }
+
+        if (++logo_tick >= 2U * MISC_LOGO_FRAMES) {
+            logo_tick = 0U;
         }
 
         /*
